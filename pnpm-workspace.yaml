@@ -1,0 +1,35 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# pnpm 12 blocks dependency install scripts unless approved here.
+allowBuilds:
+  "@prisma/engines": true
+  prisma: true
+  "@swc/core": true
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+  "@scarf/scarf": false # telemetry only; not needed
+
+# pnpm 12 delays brand-new releases (supply-chain protection); eslint 10.14.0 was
+# released inside that window when this lockfile was created.
+minimumReleaseAgeExclude:
+  - eslint@10.14.0
+  - "@swc/core-darwin-arm64@1.16.21"
+  - "@swc/core-darwin-x64@1.16.21"
+  - "@swc/core-linux-arm-gnueabihf@1.16.21"
+  - "@swc/core-linux-arm64-gnu@1.16.21"
+  - "@swc/core-linux-arm64-musl@1.16.21"
+  - "@swc/core-linux-ppc64-gnu@1.16.21"
+  - "@swc/core-linux-s390x-gnu@1.16.21"
+  - "@swc/core-linux-x64-gnu@1.16.21"
+  - "@swc/core-linux-x64-musl@1.16.21"
+  - "@swc/core-win32-arm64-msvc@1.16.21"
+  - "@swc/core-win32-ia32-msvc@1.16.21"
+  - "@swc/core-win32-x64-msvc@1.16.21"
+  - "@swc/core@1.16.21"
+  - framer-motion@14.9.0
+  - lucide-react@1.66.0
+  - motion-dom@14.9.0
+  - motion@14.9.0

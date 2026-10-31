@@ -1,0 +1,77 @@
+/*
+ * HanaBrew design tokens: the single source of truth for colour, radius, shadow and motion.
+ * Components never use raw colour values; they use the Tailwind utilities mapped to these
+ * variables in globals.css (bg-surface, text-muted, ...). A theme is one block below.
+ * Colour tokens that carry text MUST stay hex so tokens.spec.ts can verify WCAG contrast.
+ */
+
+/* ---- Sakura Latte (light, default) ---- */
+:root,
+[data-theme="sakura-latte"] {
+  color-scheme: light;
+
+  --hb-bg: #fffdd0; /* milk foam cream */
+  --hb-surface: #fffbe3;
+  --hb-surface-glass: rgb(255 253 208 / 0.74);
+  --hb-border: rgb(74 44 42 / 0.16);
+  --hb-text: #4a2c2a; /* coffee brown */
+  --hb-text-muted: #7a5650;
+  --hb-accent: #ffb7c5; /* soft sakura pink */
+  --hb-accent-hover: #ffa3b6;
+  --hb-on-accent: #4a2c2a;
+  --hb-secondary: #9caf88; /* matcha sage */
+  --hb-on-secondary: #26301e;
+  --hb-secondary-text: #55694a;
+  --hb-danger: #b3261e;
+  --hb-on-danger: #ffffff;
+  --hb-ring: #c2587a;
+
+  --hb-wallpaper-1: #fffdd0;
+  --hb-wallpaper-2: #ffe6ec;
+  --hb-wallpaper-3: #ffc8d4;
+  --hb-petal: #ffb7c5;
+  --hb-shadow-window: 0 18px 48px -12px rgb(74 44 42 / 0.28), 0 2px 6px rgb(74 44 42 / 0.1);
+  --hb-shadow-soft: 0 6px 20px -8px rgb(74 44 42 / 0.25);
+}
+
+/* ---- Midnight Blossom (dark) ---- */
+[data-theme="midnight-blossom"] {
+  color-scheme: dark;
+
+  --hb-bg: #15131d; /* dark navy-espresso */
+  --hb-surface: #211b28;
+  --hb-surface-glass: rgb(33 27 40 / 0.74);
+  --hb-border: rgb(248 239 216 / 0.14);
+  --hb-text: #f8efd8; /* cream */
+  --hb-text-muted: #c4b8aa;
+  --hb-accent: #ffb7c5;
+  --hb-accent-hover: #ffc9d4;
+  --hb-on-accent: #2b1a20;
+  --hb-secondary: #9caf88;
+  --hb-on-secondary: #1c2415;
+  --hb-secondary-text: #aec29a;
+  --hb-danger: #ff9a92;
+  --hb-on-danger: #2a0f0d;
+  --hb-ring: #ffb7c5;
+
+  --hb-wallpaper-1: #11152a;
+  --hb-wallpaper-2: #231b2c;
+  --hb-wallpaper-3: #3a2530;
+  --hb-petal: #e89aae;
+  --hb-shadow-window: 0 18px 48px -12px rgb(0 0 0 / 0.6), 0 2px 6px rgb(0 0 0 / 0.35);
+  --hb-shadow-soft: 0 6px 20px -8px rgb(0 0 0 / 0.55);
+}
+
+/* ---- Theme-independent tokens ---- */
+:root {
+  --hb-radius-sm: 0.5rem;
+  --hb-radius-md: 0.875rem;
+  --hb-radius-lg: 1.25rem;
+  --hb-radius-xl: 1.75rem;
+  --hb-duration-fast: 120ms;
+  --hb-duration-base: 220ms;
+  --hb-duration-slow: 420ms;
+  --hb-ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --hb-topbar-height: 2.5rem;
+  --hb-dock-space: 5.5rem;
+}

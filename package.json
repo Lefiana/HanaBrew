@@ -1,0 +1,33 @@
+{
+  "name": "hanabrew",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=22.22.1"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "pnpm --filter @hanabrew/database db:generate",
+    "db:migrate": "pnpm --filter @hanabrew/database db:migrate",
+    "db:migrate:deploy": "pnpm --filter @hanabrew/database db:migrate:deploy",
+    "db:status": "pnpm --filter @hanabrew/database db:status"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "eslint": "^10.14.0",
+    "globals": "^17.0.0",
+    "prettier": "^3.6.0",
+    "turbo": "^2.11.10",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1"
+  }
+}
