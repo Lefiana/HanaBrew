@@ -3,6 +3,7 @@
 import { ClockWidget } from "@/components/widgets/clock-widget";
 import { WindowLayer } from "@/components/windows/window-layer";
 import { useMe } from "@/features/auth/use-me";
+import { DashboardWidgets } from "@/features/dashboard/dashboard-widgets";
 import { useWindowStore } from "@/stores/window-store-instance";
 import { AppLauncher, useLauncherShortcut } from "./app-launcher";
 import { Dock } from "./dock";
@@ -19,9 +20,13 @@ export function DesktopShell() {
     <div className="hb-wallpaper relative h-dvh w-screen overflow-hidden">
       <SakuraPetals />
       <TopBar />
-      <div className="absolute right-6 top-16 z-0">
+      <aside
+        aria-label="Dashboard"
+        className="absolute right-6 top-16 z-0 flex max-h-[calc(100dvh-9rem)] w-72 flex-col gap-3 overflow-y-auto pb-2"
+      >
         <ClockWidget name={me?.user.displayName} />
-      </div>
+        <DashboardWidgets />
+      </aside>
       {!hasWindows && (
         <p className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 text-center text-sm text-muted">
           Open an app from the dock, or press Ctrl/⌘ K

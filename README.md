@@ -14,10 +14,17 @@ API-first design (Next.js frontend, NestJS API, PostgreSQL).
 | M3 HanaAI + chibi companion                                                               | ⏳ not started                                                       |
 | M4 Journal + memory                                                                       | ⏳ not started                                                       |
 
-**What works today:** sign up / sign in with a username, a private personal workspace, the
-Sakura Latte and Midnight Blossom themes, a desktop with draggable/resizable windows, dock,
-app launcher (Ctrl/⌘ K), a Settings app, and a responsive mobile layout. **What does not exist
-yet:** tasks, calendar, projects, AI chat, journal. Those apps show a preview panel and store nothing.
+**What works today:** sign up / sign in with a username; a private personal workspace; two themes;
+a desktop with draggable/resizable windows, dock, launcher (Ctrl/⌘ K) and a responsive mobile layout; and, new in M2:
+
+- **HanaTasks**: create/edit/delete, complete & reopen, status, priority, due date, description, tags, project link;
+  search, filter (view, priority, project, tag) and sort; quick-add; overall progress.
+- **HanaCalendar**: month, week and day views; timed and all-day events; categories; time-zone aware.
+- **HanaProjects**: projects with status and dates, archive/restore, linked tasks, **progress calculated from real task records**.
+- **Dashboard widgets** (desktop side panel and mobile home): task progress ring, due soon, coming up, projects in flight, all computed by the API.
+- **Settings**: theme, motion, **time zone**, account.
+
+**Not built yet:** HanaAI chat and the chibi companion (M3), journal and memory (M4).
 
 ## Stack
 
@@ -83,6 +90,21 @@ docker compose up --build        # postgres → migrate (one-shot) → api → w
 
 See [docs/deployment/docker.md](./docs/deployment/docker.md) for migrations, backups, restore and HTTPS.
 
+## API overview (all routes except health and auth need a session)
+
+| Route                                                                                       | Purpose                                                                                                      |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `POST /api/auth/sign-up/email`, `/sign-in/username`, `/sign-out`                            | Better Auth (username accounts)                                                                              |
+| `GET /api/me`                                                                               | signed-in user + personal workspace                                                                          |
+| `GET/POST /api/tasks`, `GET/PATCH/DELETE /api/tasks/:id`, `GET /api/tasks/summary`          | tasks (filters: `status`, `priority`, `projectId`, `tag`, `q`, `dueFrom`, `dueTo`, `sort`, `order`, `limit`) |
+| `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/:id`                              | projects with calculated `progress`                                                                          |
+| `GET/POST /api/calendar-events` (`from`, `to`), `GET/PATCH/DELETE /api/calendar-events/:id` | events overlapping a range                                                                                   |
+| `GET/PATCH /api/settings`                                                                   | user settings (time zone)                                                                                    |
+| `GET /api/dashboard`                                                                        | everything the widgets need                                                                                  |
+| `GET /api/health`, `/api/health/ready`                                                      | liveness / readiness                                                                                         |
+
+Interactive docs: `/docs`. Errors share one shape: `{ statusCode, error, message, requestId, issues? }`.
+
 ## Repository layout
 
 ```text
@@ -97,30 +119,36 @@ docs/                 architecture, development and deployment docs
 More: [ARCHITECTURE.md](./ARCHITECTURE.md) · [docs/development/adding-an-app.md](./docs/development/adding-an-app.md) ·
 [docs/development/troubleshooting.md](./docs/development/troubleshooting.md).
 
-## Verification status (M0 + M1)
+## Verification status (M0 + M1 + M2)
 
 Honest account of what has and has not been run.
 
-**Run and passing in the authoring sandbox** (Node 22, PostgreSQL 16 + pgvector 0.6):
-`pnpm install`; builds of all four workspaces; `tsc` typecheck and ESLint on all workspaces;
-Prettier check; **web unit tests (64)** (window math, window store, registry, WCAG contrast of both
-themes); **contracts unit tests (9)**; **API unit tests (13)**; **API e2e tests (19)** against real PostgreSQL (sign-up/sign-in/sign-out,
-401 on private routes, workspace provisioning and race safety, cross-user isolation, CORS, security headers, OpenAPI);
-`next build`; booting the compiled API and the Next standalone server and hitting them over HTTP;
-cross-origin sign-up from the web origin.
+**Run and passing in the authoring sandbox** (Node 22, PostgreSQL 16 + pgvector 0.6), from a clean install:
+
+- `pnpm install --frozen-lockfile`, then Turborepo `build`, `lint`, `typecheck` and `test`: **15/15 tasks**, repeated 3× to check for flakiness.
+- **Unit/component tests: 174**: contracts 30, API 28, web 116 (94 logic tests including DST, all-day and layout maths, plus
+  22 component tests that render each app in jsdom against a fake API and drive real interactions: quick-add, completing, editing,
+  calendar event creation with exact instants, validation errors, time-zone saving).
+- **API e2e tests: 55** against real PostgreSQL: sign-up/sign-in, 401 on every private route, CRUD, filters/sort/search,
+  status/`completedAt` rules, project progress from real records, calendar overlap and all-day rules, DB CHECK constraints,
+  CSRF origin check, and **tenant isolation** (a second user gets 404 on every read/update/delete of the first user's tasks,
+  projects and events, and can't attach tasks to their projects). I proved the isolation tests are real by deliberately removing
+  the workspace filter from the task service: exactly the isolation tests failed; then restored it.
+- `next build`; the compiled API and Next standalone server were started and exercised over HTTP, including a full
+  sign-up → project → tasks → event → dashboard scenario and a forged-origin write (403).
 
 **Not verified here. Please run locally first:**
 
-1. **Docker**: `docker compose up --build`. Dockerfiles and compose were written but there was no Docker in the sandbox.
-2. **Prisma migration tooling**: the sandbox could not download Prisma's schema engine, so the two migration SQL files were
-   **written by hand** in Prisma's format and applied with plain SQL. On your machine run `pnpm db:migrate:deploy`
-   on a fresh DB, then `pnpm db:status`, then `pnpm db:migrate` (`prisma migrate dev`). It should report _no pending changes_.
-   If it reports drift, delete `packages/database/prisma/migrations/20261031000000_init`, run `pnpm db:migrate -- --name init`
-   and keep the hand-written partial index migration (`..._one_personal_workspace_per_user`).
-3. **Real-browser behaviour**: no browser was available, so dragging, resizing, the dock, the launcher and the mobile layout were
-   verified only through their logic (unit tests) and a successful production build, **not by clicking through them**. Expect
-   to find visual or interaction polish issues; please report them.
-4. **Turborepo task runner** with your environment (`pnpm build` / `pnpm test`); package scripts were run individually.
+1. **Docker** (`docker compose up --build`): Dockerfiles and compose were written but there was no Docker in the sandbox
+   (you've since run the M0/M1 stack successfully; the M2 migration is new, so re-run it).
+2. **Prisma migration tooling**: the sandbox could not download Prisma's schema engine, so all three migration SQL files were
+   **written by hand** in Prisma's format and applied as plain SQL. On your machine run `pnpm db:migrate:deploy`, then
+   `pnpm db:migrate` (`prisma migrate dev`): it should report _no pending changes_. If it proposes a new migration, keep your
+   data, send me its SQL, and don't accept a reset. The `CHECK` constraints and partial index in the migrations are invisible to Prisma by design.
+3. **Real-browser behaviour**: there was no browser in the sandbox. Interactions were verified in jsdom, which does not do
+   layout, so **visual details are unchecked**: week/day grid event positioning and sizing, how the dashboard column fits
+   beside windows on small laptop screens, scroll behaviour, and form spacing.
+4. Prisma `migrate` and Docker on **your Windows machine** with the new migration.
 
 ## Known limitations
 
@@ -128,4 +156,8 @@ cross-origin sign-up from the web origin.
 - Auth rate limiting uses in-memory counters (single API instance). Move to Redis before running replicas.
 - Username-only accounts use a reserved placeholder email on `users.hanabrew.invalid`; there is **no password reset** until a real email is attached.
 - Window layouts persist per browser, not per user account.
+- Task lists return at most 500 rows (no cursor pagination yet). Calendar queries are limited to 100 days at a time.
+- Calendar weeks start on Sunday (one constant, `WEEK_STARTS_ON`). No recurring events yet (M5), and no drag-to-move/resize of events: edit through the form.
+- A task belongs to at most one project. Tags are free text on the task (no tag management screen).
+- The weekly/daily "now" line and "today" follow the chosen time zone, but the page doesn't live-update past midnight until it refreshes.
 - The `shadcn` CLI could not run offline; the UI components in `apps/web/src/components/ui` are hand-written in the shadcn style (`components.json` is included so `pnpm dlx shadcn add …` works later).

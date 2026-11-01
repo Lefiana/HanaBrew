@@ -45,3 +45,28 @@ export async function apiFetch<S extends z.ZodType>(
   }
   return schema.parse(payload);
 }
+
+/** JSON write helper (POST/PATCH/DELETE). A 204 response resolves to `undefined`: pass `z.undefined()`. */
+export function apiSend<S extends z.ZodType>(
+  method: "POST" | "PATCH" | "DELETE",
+  path: string,
+  schema: S,
+  body?: unknown,
+): Promise<z.infer<S>> {
+  return apiFetch(path, schema, {
+    method,
+    ...(body === undefined
+      ? {}
+      : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
+}
+
+/** Maps API validation issues to { fieldPath: message } for display next to form fields. */
+export function fieldErrorsOf(error: unknown): Record<string, string> {
+  if (!(error instanceof ApiRequestError)) return {};
+  return Object.fromEntries((error.body?.issues ?? []).map((issue) => [issue.path, issue.message]));
+}
+
+export function errorMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : "Something went wrong. Please try again.";
+}

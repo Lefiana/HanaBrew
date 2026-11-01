@@ -20,17 +20,23 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     let statusCode: number = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = "Something went wrong. Please try again.";
+    let issues: ApiError["issues"];
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
       const response = exception.getResponse();
+      const object =
+        typeof response === "object" ? (response as Record<string, unknown>) : undefined;
       const raw =
         typeof response === "string"
           ? response
-          : typeof (response as { message?: unknown }).message === "string"
-            ? (response as { message: string }).message
+          : typeof object?.message === "string"
+            ? object.message
             : exception.message;
-      if (statusCode < 500) message = raw;
+      if (statusCode < 500) {
+        message = raw;
+        if (Array.isArray(object?.issues)) issues = object.issues as ApiError["issues"];
+      }
     }
 
     if (statusCode >= 500) {
@@ -44,6 +50,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       error: HttpStatus[statusCode] ?? "Error",
       message,
       requestId,
+      ...(issues ? { issues } : {}),
     };
     res.status(statusCode).json(body);
   }

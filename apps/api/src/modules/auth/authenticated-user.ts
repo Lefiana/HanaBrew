@@ -20,12 +20,17 @@ export function toAuthenticatedUser(user: SessionUserLike): AuthenticatedUser {
   return { userId: user.id, username: user.username ?? "", displayName: user.name };
 }
 
-/** Resolves the verified identity placed on the request by the global auth guard. */
+/** Reads the verified identity the global auth guard placed on the request. */
+export function getAuthenticatedUser(request: {
+  session?: { user?: SessionUserLike };
+}): AuthenticatedUser {
+  const user = request.session?.user;
+  if (!user) throw new UnauthorizedException();
+  return toAuthenticatedUser(user);
+}
+
+/** Resolves the verified identity for a controller parameter. */
 export const CurrentUser = createParamDecorator(
-  (_data: unknown, context: ExecutionContext): AuthenticatedUser => {
-    const request = context.switchToHttp().getRequest<{ session?: { user?: SessionUserLike } }>();
-    const user = request.session?.user;
-    if (!user) throw new UnauthorizedException();
-    return toAuthenticatedUser(user);
-  },
+  (_data: unknown, context: ExecutionContext): AuthenticatedUser =>
+    getAuthenticatedUser(context.switchToHttp().getRequest()),
 );

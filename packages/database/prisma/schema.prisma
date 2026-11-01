@@ -31,6 +31,7 @@ model User {
   accounts    Account[]
   memberships WorkspaceMembership[]
   ownedWorkspaces Workspace[]
+  settings    UserSettings?
 
   @@map("users")
 }
@@ -109,6 +110,9 @@ model Workspace {
 
   owner       User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   memberships WorkspaceMembership[]
+  tasks       Task[]
+  projects    Project[]
+  events      CalendarEvent[]
 
   @@index([ownerId])
   @@map("workspaces")
@@ -127,4 +131,109 @@ model WorkspaceMembership {
   @@unique([workspaceId, userId])
   @@index([userId])
   @@map("workspace_memberships")
+}
+
+// ---------------------------------------------------------------------------
+// M2: productivity data. Every row belongs to a Workspace; the API scopes every
+// query by workspaceId and never trusts an id from the client for ownership.
+// Enum value order matters: it is the sort order (LOW < MEDIUM < HIGH < URGENT).
+// ---------------------------------------------------------------------------
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+model UserSettings {
+  userId    String   @id @db.Uuid
+  /// IANA zone used to render times (e.g. "Asia/Manila").
+  timeZone  String   @default("UTC")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @db.Uuid
+  name        String
+  description String?
+  status      ProjectStatus @default(PLANNING)
+  /// Calendar dates (no time, no zone).
+  startDate   DateTime?     @db.Date
+  targetDate  DateTime?     @db.Date
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+
+  @@index([workspaceId, status])
+  @@map("projects")
+}
+
+model Task {
+  id          String       @id @default(uuid()) @db.Uuid
+  workspaceId String       @db.Uuid
+  projectId   String?      @db.Uuid
+  title       String
+  description String?
+  status      TaskStatus   @default(TODO)
+  priority    TaskPriority @default(MEDIUM)
+  /// Calendar date (no time, no zone) so it never shifts with time zones.
+  dueDate     DateTime?    @db.Date
+  completedAt DateTime?    @db.Timestamptz(3)
+  tags        String[]     @default([])
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, dueDate])
+  @@index([workspaceId, projectId])
+  @@map("tasks")
+}
+
+/// Timed events: startsAt/endsAt are exact instants.
+/// All-day events: floating dates stored as UTC midnight; endsAt is the EXCLUSIVE end (next day 00:00Z).
+model CalendarEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  title       String
+  description String?
+  category    String?
+  allDay      Boolean  @default(false)
+  startsAt    DateTime @db.Timestamptz(3)
+  endsAt      DateTime @db.Timestamptz(3)
+  /// IANA zone the event was created in (display fidelity; basis for future recurrence).
+  timeZone    String
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, startsAt])
+  @@map("calendar_events")
 }

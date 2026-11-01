@@ -1,8 +1,11 @@
 "use client";
 
 import { Check } from "lucide-react";
+import { useTimeZone } from "@/features/settings/use-time-zone";
+import { browserTimeZone } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 import { useMe } from "@/features/auth/use-me";
 import { useSignOut } from "@/features/auth/use-sign-out";
@@ -27,6 +30,57 @@ const MOTION_OPTIONS: Array<{ value: MotionPreference; label: string; hint: stri
   },
   { value: "reduced", label: "Reduce motion", hint: "No falling petals or window animations." },
 ];
+
+function allTimeZones(current: string): string[] {
+  const zones = new Set<string>(["UTC", current, ...Intl.supportedValuesOf("timeZone")]);
+  return [...zones].sort();
+}
+
+function TimeZoneSection() {
+  const { timeZone, saved, save } = useTimeZone();
+  const browser = browserTimeZone();
+  return (
+    <section aria-labelledby="tz-heading">
+      <h2 id="tz-heading" className="text-lg font-semibold">
+        Time zone
+      </h2>
+      <p className="mt-1 text-sm text-muted">
+        Calendar times and “today” use this zone.{" "}
+        {saved ? "" : "You haven’t chosen one, so your browser’s zone is used."}
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Select
+          aria-labelledby="tz-heading"
+          className="max-w-xs"
+          value={timeZone}
+          disabled={save.isPending}
+          onChange={(e) => save.mutate(e.target.value)}
+        >
+          {allTimeZones(timeZone).map((zone) => (
+            <option key={zone} value={zone}>
+              {zone.replace(/_/g, " ")}
+            </option>
+          ))}
+        </Select>
+        {saved !== browser && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={save.isPending}
+            onClick={() => save.mutate(browser)}
+          >
+            Use my browser’s zone ({browser.replace(/_/g, " ")})
+          </Button>
+        )}
+      </div>
+      {save.isError && (
+        <p role="alert" className="mt-2 text-xs text-danger">
+          {save.error.message}
+        </p>
+      )}
+    </section>
+  );
+}
 
 export function SettingsApp() {
   const theme = useUiStore((s) => s.theme);
@@ -104,6 +158,8 @@ export function SettingsApp() {
           ))}
         </div>
       </section>
+
+      <TimeZoneSection />
 
       <section aria-labelledby="account-heading">
         <h2 id="account-heading" className="text-lg font-semibold">

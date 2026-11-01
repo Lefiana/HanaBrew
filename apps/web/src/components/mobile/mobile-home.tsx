@@ -7,6 +7,7 @@ import { SakuraPetals } from "@/components/desktop/sakura-petals";
 import { AppIcon } from "@/features/desktop/app-icons";
 import { APPLICATIONS } from "@/features/desktop/app-registry";
 import { useMe } from "@/features/auth/use-me";
+import { DashboardWidgets } from "@/features/dashboard/dashboard-widgets";
 import { MobileBottomNav } from "./mobile-bottom-nav";
 
 /** Small-screen home: a touch-friendly app grid instead of floating windows. */
@@ -21,6 +22,7 @@ export function MobileHome() {
       </header>
       <main className="relative z-10 flex-1 overflow-auto px-4 pb-4">
         <ClockWidget name={me?.user.displayName} />
+        <DashboardWidgets className="mt-3" />
         <ul className="mt-5 grid grid-cols-2 gap-3">
           {APPLICATIONS.map((app) => (
             <li key={app.id}>

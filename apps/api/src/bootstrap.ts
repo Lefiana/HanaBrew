@@ -2,6 +2,7 @@ import type { NestExpressApplication } from "@nestjs/platform-express";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import type { NextFunction, Request, Response } from "express";
 import helmet from "helmet";
+import { createOriginCheck } from "./common/origin-check.middleware.js";
 import { requestContextMiddleware } from "./common/request-context.middleware.js";
 import { APP_VERSION } from "./common/version.js";
 import type { Env } from "./config/env.js";
@@ -19,6 +20,8 @@ export function configureApp(app: NestExpressApplication, env: Env): void {
   app.use((req: Request, res: Response, next: NextFunction) =>
     req.path.startsWith("/docs") ? relaxed(req, res, next) : strict(req, res, next),
   );
+
+  app.use(createOriginCheck(env.CORS_ALLOWED_ORIGINS));
 
   app.enableCors({
     origin: env.CORS_ALLOWED_ORIGINS,

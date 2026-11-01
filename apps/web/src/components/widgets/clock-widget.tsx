@@ -23,9 +23,9 @@ export function useNow(intervalMs = 15_000): Date | null {
 /** A cozy clock/greeting card. Uses the browser's local time zone. */
 export function ClockWidget({ name }: { name?: string }) {
   const now = useNow();
-  if (!now) return <div className="h-28 w-60" aria-hidden />;
+  if (!now) return <div className="h-28 w-full" aria-hidden />;
   return (
-    <div className="hb-glass w-60 rounded-xl p-4 shadow-soft">
+    <div className="hb-glass w-full rounded-xl p-4 shadow-soft">
       <p className="flex items-center gap-1.5 text-sm text-muted">
         <Coffee aria-hidden className="size-4" />
         {greetingFor(now.getHours())}

@@ -8,3 +8,11 @@
 4. Keep window concerns out of the app. Never import `window-store` from inside an app component.
 5. Data access goes through the API: add a Nest module under `apps/api/src/modules/<name>/` (controller → service → Prisma),
    a Zod contract in `packages/contracts`, and authorise every query through the caller's workspace membership.
+
+## Worked example: how HanaTasks is wired (M2)
+
+- Contract: `packages/contracts/src/tasks.ts` (Zod schemas for input and output, shared by API and web).
+- API: `apps/api/src/modules/tasks/` (controller → service). The controller uses `@UseGuards(WorkspaceGuard)` + `@CurrentWorkspace()`; the service scopes every query by `workspaceId`.
+- Web data: `apps/web/src/features/tasks/use-tasks.ts` (TanStack Query hooks; mutations invalidate `tasks`, `projects`, `dashboard`).
+- Web UI: `tasks-app.tsx`, registered in `app-components.tsx`.
+- Tests: contract tests, API e2e (including cross-user isolation), and a jsdom component test with `src/test/fake-api.tsx`.
