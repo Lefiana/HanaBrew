@@ -17,10 +17,13 @@ API-first design (Next.js frontend, NestJS API, PostgreSQL).
 **What works today:** sign up / sign in with a username; a private personal workspace; two themes;
 a desktop with draggable/resizable windows, dock, launcher (Ctrl/⌘ K) and a responsive mobile layout; and, new in M2:
 
-- **HanaTasks**: create/edit/delete, complete & reopen, status, priority, due date, description, tags, project link;
-  search, filter (view, priority, project, tag) and sort; quick-add; overall progress.
-- **HanaCalendar**: month, week and day views; timed and all-day events; categories; time-zone aware.
-- **HanaProjects**: projects with status and dates, archive/restore, linked tasks, **progress calculated from real task records**.
+- **HanaTasks**: create/edit/delete, complete, status, priority, due date, description, tags, project link;
+  search, filter (view, priority, project, tag) and sort; quick-add; overall progress. The whole task card opens the task.
+  **Completed tasks are locked** (read-only); the only way to change one is an explicit, confirmed **Reopen**.
+- **HanaCalendar**: month, week and day views; timed and all-day events; categories; time-zone aware;
+  **task due dates and project deadlines** shown alongside events (click one to open it).
+- **HanaProjects**: projects with status and dates, archive/restore, linked tasks (added with the full task form, project preselected),
+  **progress calculated from real task records** (cancelled tasks aren't counted).
 - **Dashboard widgets** (desktop side panel and mobile home): task progress ring, due soon, coming up, projects in flight, all computed by the API.
 - **Settings**: theme, motion, **time zone**, account.
 
@@ -126,14 +129,18 @@ Honest account of what has and has not been run.
 **Run and passing in the authoring sandbox** (Node 22, PostgreSQL 16 + pgvector 0.6), from a clean install:
 
 - `pnpm install --frozen-lockfile`, then Turborepo `build`, `lint`, `typecheck` and `test`: **15/15 tasks**, repeated 3× to check for flakiness.
-- **Unit/component tests: 174**: contracts 30, API 28, web 116 (94 logic tests including DST, all-day and layout maths, plus
-  22 component tests that render each app in jsdom against a fake API and drive real interactions: quick-add, completing, editing,
-  calendar event creation with exact instants, validation errors, time-zone saving).
-- **API e2e tests: 55** against real PostgreSQL: sign-up/sign-in, 401 on every private route, CRUD, filters/sort/search,
-  status/`completedAt` rules, project progress from real records, calendar overlap and all-day rules, DB CHECK constraints,
-  CSRF origin check, and **tenant isolation** (a second user gets 404 on every read/update/delete of the first user's tasks,
-  projects and events, and can't attach tasks to their projects). I proved the isolation tests are real by deliberately removing
-  the workspace filter from the task service: exactly the isolation tests failed; then restored it.
+- **Unit/component tests: 208**: contracts 38, API 33, web 137 (96 logic tests including DST, all-day, calendar layout and deadline
+  matching, plus 41 component tests that render each app in jsdom against a fake API and drive real interactions: quick-add, whole-card
+  click, completing, the locked read-only view and confirmed reopen, the full task form inside a project, calendar event creation with exact
+  instants and deadlines on the calendar, validation errors, time-zone saving).
+- **API e2e tests: 65** against real PostgreSQL: sign-up/sign-in, 401 on every private route, CRUD, filters/sort/search,
+  status/`completedAt` rules, **the completed-task lock (409 on every kind of edit, reopen allowed, progress moves accordingly)**,
+  project progress from real records (including cancelled tasks), calendar overlap and all-day rules, **calendar deadlines**, DB CHECK
+  constraints, CSRF origin check, and **tenant isolation** (a second user gets 404 on every read/update/delete of the first user's
+  tasks, projects and events, sees none of their deadlines, and can't attach tasks to their projects).
+- **Mutation checks** (I deliberately broke the code and confirmed the tests fail): removing the workspace filter (isolation tests failed);
+  disabling the completed-task lock (API tests failed); removing the lost-update guard (its unit tests failed; an e2e race test alone could
+  _not_ catch this, so it has a dedicated deterministic unit test); disabling the locked UI view and the checkbox/tag opt-out (component tests failed).
 - `next build`; the compiled API and Next standalone server were started and exercised over HTTP, including a full
   sign-up → project → tasks → event → dashboard scenario and a forged-origin write (403).
 
@@ -146,8 +153,8 @@ Honest account of what has and has not been run.
    `pnpm db:migrate` (`prisma migrate dev`): it should report _no pending changes_. If it proposes a new migration, keep your
    data, send me its SQL, and don't accept a reset. The `CHECK` constraints and partial index in the migrations are invisible to Prisma by design.
 3. **Real-browser behaviour**: there was no browser in the sandbox. Interactions were verified in jsdom, which does not do
-   layout, so **visual details are unchecked**: week/day grid event positioning and sizing, how the dashboard column fits
-   beside windows on small laptop screens, scroll behaviour, and form spacing.
+   layout, so **visual details are unchecked**: week/day grid event positioning and sizing, how deadline chips look and wrap in
+   month cells, how the dashboard column fits beside windows, scroll behaviour, and form spacing. (You have since checked the M2 layout by hand.)
 4. Prisma `migrate` and Docker on **your Windows machine** with the new migration.
 
 ## Known limitations
@@ -159,5 +166,7 @@ Honest account of what has and has not been run.
 - Task lists return at most 500 rows (no cursor pagination yet). Calendar queries are limited to 100 days at a time.
 - Calendar weeks start on Sunday (one constant, `WEEK_STARTS_ON`). No recurring events yet (M5), and no drag-to-move/resize of events: edit through the form.
 - A task belongs to at most one project. Tags are free text on the task (no tag management screen).
+- Completed tasks are locked, but can still be **deleted** (after a confirmation). Cancelled tasks are not locked. Reopening always returns a task to "To do". There is no audit trail of reopen events yet.
+- The calendar shows task and project deadlines read-only as markers: change a due date by opening the task. Cancelled tasks and archived projects don't appear.
 - The weekly/daily "now" line and "today" follow the chosen time zone, but the page doesn't live-update past midnight until it refreshes.
 - The `shadcn` CLI could not run offline; the UI components in `apps/web/src/components/ui` are hand-written in the shadcn style (`components.json` is included so `pnpm dlx shadcn add …` works later).

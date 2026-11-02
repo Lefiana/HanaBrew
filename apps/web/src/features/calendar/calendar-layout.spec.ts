@@ -1,6 +1,7 @@
 import type { CalendarEvent } from "@hanabrew/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  deadlinesForDay,
   eventsForDay,
   layoutDay,
   monthGrid,
@@ -138,5 +139,25 @@ describe("layoutDay", () => {
     expect(clipped).toMatchObject({ top: 0, height: 60 });
     const [tiny] = layoutDay([event({ start: at(9), end: at(9, 5) })], "2026-11-02", "UTC");
     expect(tiny!.height).toBe(20);
+  });
+});
+
+describe("deadlinesForDay", () => {
+  const task = (dueDate: string | null) => ({ id: `t-${dueDate}`, dueDate }) as never;
+  const project = (targetDate: string | null) => ({ id: `p-${targetDate}`, targetDate }) as never;
+  const data = {
+    tasks: [task("2026-11-10"), task("2026-11-10"), task("2026-11-11")],
+    projects: [project("2026-11-10"), project("2026-12-01")],
+  };
+
+  it("matches tasks and projects by calendar date", () => {
+    const day = deadlinesForDay(data, "2026-11-10");
+    expect(day.tasks).toHaveLength(2);
+    expect(day.projects).toHaveLength(1);
+    expect(deadlinesForDay(data, "2026-11-11")).toEqual({ tasks: [data.tasks[2]], projects: [] });
+  });
+  it("is empty for other days and while loading", () => {
+    expect(deadlinesForDay(data, "2026-11-12")).toEqual({ tasks: [], projects: [] });
+    expect(deadlinesForDay(undefined, "2026-11-10")).toEqual({ tasks: [], projects: [] });
   });
 });

@@ -1,7 +1,14 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { calendarEvent, installFakeApi, newDb, renderWithQuery } from "@/test/fake-api";
+import {
+  calendarEvent,
+  installFakeApi,
+  newDb,
+  project,
+  renderWithQuery,
+  task,
+} from "@/test/fake-api";
 import { toDateKey, zonedDateKey, zonedParts, zonedWallTimeToInstant } from "@/lib/tz";
 import { CalendarApp } from "./calendar-app";
 
@@ -119,5 +126,123 @@ describe("CalendarApp", () => {
     expect(
       within(screen.getByRole("tablist", { name: "Calendar view" })).getAllByRole("tab"),
     ).toHaveLength(3);
+  });
+});
+
+describe("CalendarApp: task and project deadlines", () => {
+  const deadlines = () => ({
+    tasks: [
+      task({ title: "Submit report", dueDate: todayKey(), priority: "HIGH" }),
+      task({
+        title: "Filed taxes",
+        dueDate: todayKey(),
+        status: "COMPLETED",
+        completedAt: "2026-11-01T08:00:00.000Z",
+      }),
+    ],
+    projects: [project({ name: "Cafe launch", targetDate: todayKey() })],
+  });
+
+  it("shows task due dates and project deadlines on the calendar, distinct from events", async () => {
+    installFakeApi(
+      newDb({
+        deadlines: {
+          tasks: [task({ title: "Submit report", dueDate: todayKey() })],
+          projects: deadlines().projects,
+        },
+        events: [calendarEvent({ title: "Standup", start: at(9), end: at(10), timeZone: ZONE })],
+      }),
+    );
+    renderWithQuery(<CalendarApp />);
+
+    expect(
+      await screen.findByRole("button", { name: "Task due: Submit report" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Project deadline: Cafe launch" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Standup/ })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Legend" })).toHaveTextContent(/Task due/);
+    expect(screen.getByRole("list", { name: "Legend" })).toHaveTextContent(/Project deadline/);
+  });
+
+  it("on a crowded day events keep their place ahead of deadlines, and '+N more' reveals the rest", async () => {
+    installFakeApi(
+      newDb({
+        deadlines: deadlines(),
+        events: [calendarEvent({ title: "Standup", start: at(9), end: at(10), timeZone: ZONE })],
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithQuery(<CalendarApp />);
+
+    expect(await screen.findByRole("button", { name: /Standup/ })).toBeInTheDocument(); // the event is never the one hidden
+    expect(
+      screen.getByRole("button", { name: "Project deadline: Cafe launch" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Task due: Filed taxes (completed)" }),
+    ).not.toBeInTheDocument(); // 4th item
+    await user.click(screen.getByRole("button", { name: "+1 more" }));
+    expect(
+      await screen.findByRole("button", { name: "Task due: Filed taxes (completed)" }),
+    ).toBeInTheDocument(); // day view shows all
+  });
+
+  it("shows them in the week and day views too", async () => {
+    installFakeApi(newDb({ deadlines: deadlines() }));
+    const user = userEvent.setup();
+    renderWithQuery(<CalendarApp />);
+
+    await user.click(await screen.findByRole("tab", { name: "Week" }));
+    expect(
+      await screen.findByRole("button", { name: "Task due: Submit report" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Day" }));
+    expect(
+      await screen.findByRole("button", { name: "Project deadline: Cafe launch" }),
+    ).toBeInTheDocument();
+  });
+
+  it("clicking a task deadline opens that task, and returns to the calendar", async () => {
+    installFakeApi(newDb({ deadlines: deadlines() }));
+    const user = userEvent.setup();
+    renderWithQuery(<CalendarApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Task due: Submit report" }));
+    expect(await screen.findByRole("heading", { name: "Edit task" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toHaveValue("Submit report");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("tab", { name: "Month" })).toBeInTheDocument();
+  });
+
+  it("a completed task's deadline opens locked", async () => {
+    installFakeApi(newDb({ deadlines: deadlines() }));
+    const user = userEvent.setup();
+    renderWithQuery(<CalendarApp />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Task due: Filed taxes (completed)" }),
+    );
+    expect(await screen.findByRole("heading", { name: "Completed task" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+  });
+
+  it("clicking a project deadline opens that project", async () => {
+    installFakeApi(newDb({ deadlines: deadlines() }));
+    const user = userEvent.setup();
+    renderWithQuery(<CalendarApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Project deadline: Cafe launch" }));
+    expect(await screen.findByRole("heading", { name: "Edit project" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Cafe launch");
+  });
+
+  it("shows nothing extra when there are no deadlines", async () => {
+    installFakeApi(newDb());
+    renderWithQuery(<CalendarApp />);
+    await screen.findByRole("tab", { name: "Month" });
+    expect(screen.queryByRole("button", { name: /Task due/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Project deadline/ })).not.toBeInTheDocument();
   });
 });

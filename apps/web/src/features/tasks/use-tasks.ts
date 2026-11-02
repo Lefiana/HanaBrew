@@ -60,7 +60,7 @@ export function useTaskSummary(timeZone: string) {
 /** Task changes also change project progress and the dashboard. */
 export function invalidateTaskData(queryClient: QueryClient): Promise<unknown> {
   return Promise.all(
-    ["tasks", "projects", "dashboard"].map((key) =>
+    ["tasks", "projects", "dashboard", "deadlines"].map((key) =>
       queryClient.invalidateQueries({ queryKey: [key] }),
     ),
   );

@@ -1,4 +1,10 @@
-import { instantsToAllDayDates, type CalendarEvent } from "@hanabrew/contracts";
+import {
+  instantsToAllDayDates,
+  type CalendarDeadlines,
+  type CalendarEvent,
+  type Project,
+  type Task,
+} from "@hanabrew/contracts";
 import {
   addDays,
   addMonths,
@@ -152,4 +158,15 @@ export function layoutDay(
   }
   flush();
   return positioned;
+}
+
+/** Deadlines are floating dates, so matching is by date key and never depends on the viewer's zone. */
+export function deadlinesForDay(
+  deadlines: CalendarDeadlines | undefined,
+  dayKey: string,
+): { tasks: Task[]; projects: Project[] } {
+  return {
+    tasks: (deadlines?.tasks ?? []).filter((task) => task.dueDate === dayKey),
+    projects: (deadlines?.projects ?? []).filter((project) => project.targetDate === dayKey),
+  };
 }

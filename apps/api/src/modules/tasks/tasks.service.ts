@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
-import type {
-  Task,
-  TaskSummary,
-  createTaskSchema,
-  listTasksQuerySchema,
-  updateTaskSchema,
+import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  classifyPatchForCompletedTask,
+  type Task,
+  type TaskSummary,
+  type createTaskSchema,
+  type listTasksQuerySchema,
+  type updateTaskSchema,
 } from "@hanabrew/contracts";
 import { Prisma, type PrismaClient } from "@hanabrew/database";
 import type { z } from "zod";
@@ -103,6 +104,20 @@ export class TasksService {
     };
   }
 
+  /** Tasks with a due date inside [from, to] (calendar dates), excluding cancelled ones. */
+  async dueBetween(workspaceId: string, from: string, to: string): Promise<Task[]> {
+    const rows = await this.db.task.findMany({
+      where: {
+        workspaceId,
+        status: { not: "CANCELLED" },
+        dueDate: { gte: parseDateOnly(from), lte: parseDateOnly(to) },
+      },
+      orderBy: [{ dueDate: "asc" }, { priority: "desc" }, { id: "asc" }],
+      take: 500,
+    });
+    return rows.map(toTaskDto);
+  }
+
   /** Open tasks with a due date, soonest (and most overdue) first. */
   async dueSoon(workspaceId: string, limit: number): Promise<Task[]> {
     const rows = await this.db.task.findMany({
@@ -141,9 +156,18 @@ export class TasksService {
   async update(workspaceId: string, id: string, input: UpdateInput): Promise<Task> {
     const existing = await this.db.task.findFirst({ where: { id, workspaceId } });
     if (!existing) throw new NotFoundException("Task not found.");
+
+    // Completed tasks are locked: only an explicit reopen is allowed (see contracts/tasks.ts).
+    if (existing.status === "COMPLETED") {
+      const verdict = classifyPatchForCompletedTask(input);
+      if (verdict === "noop") return toTaskDto(existing);
+      if (verdict === "locked") {
+        throw new ConflictException("Completed tasks are locked. Reopen the task to change it.");
+      }
+    }
     if (input.projectId) await this.assertProjectInWorkspace(workspaceId, input.projectId);
 
-    const data: Prisma.TaskUncheckedUpdateInput = {};
+    const data: Prisma.TaskUncheckedUpdateManyInput = {};
     if (input.title !== undefined) data.title = input.title;
     if (input.description !== undefined) data.description = input.description;
     if (input.priority !== undefined) data.priority = input.priority;
@@ -155,9 +179,16 @@ export class TasksService {
       data.status = input.status;
       data.completedAt = completedAtFor(input.status, existing, new Date());
     }
-    // `id` is a primary key that cannot change workspace, and ownership was verified above.
-    const row = await this.db.task.update({ where: { id }, data });
-    return toTaskDto(row);
+    // Conditional on the status we validated against: if the task was completed (or reopened) by
+    // another request in the meantime, nothing is written and the caller is told to retry. This
+    // closes the check-then-write gap so the lock can't be bypassed by a race.
+    const { count } = await this.db.task.updateMany({
+      where: { id, workspaceId, status: existing.status },
+      data,
+    });
+    if (count === 0)
+      throw new ConflictException("This task was changed elsewhere. Reload and try again.");
+    return this.get(workspaceId, id);
   }
 
   async remove(workspaceId: string, id: string): Promise<void> {

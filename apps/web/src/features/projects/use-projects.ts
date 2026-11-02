@@ -24,7 +24,7 @@ export function useProjectMutations() {
   const queryClient = useQueryClient();
   const done = () =>
     Promise.all(
-      ["projects", "tasks", "dashboard"].map((key) =>
+      ["projects", "tasks", "dashboard", "deadlines"].map((key) =>
         queryClient.invalidateQueries({ queryKey: [key] }),
       ),
     );

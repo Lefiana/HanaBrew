@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   allDayToInstants,
+  classifyPatchForCompletedTask,
+  listCalendarDeadlinesQuerySchema,
   createCalendarEventSchema,
   createProjectSchema,
   createTaskSchema,
@@ -196,6 +198,41 @@ describe("calendar time model", () => {
         from: "2026-12-01T00:00:00Z",
         to: "2026-11-01T00:00:00Z",
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe("completed task lock", () => {
+  it("allows only an explicit reopen, or a harmless repeat of COMPLETED", () => {
+    expect(classifyPatchForCompletedTask({ status: "TODO" })).toBe("reopen");
+    expect(classifyPatchForCompletedTask({ status: "IN_PROGRESS" })).toBe("reopen");
+    expect(classifyPatchForCompletedTask({ status: "COMPLETED" })).toBe("noop");
+  });
+  it.each([
+    ["editing the title", { title: "x" }],
+    ["reopening AND editing", { status: "TODO", title: "x" }],
+    ["cancelling", { status: "CANCELLED" }],
+    ["moving project", { projectId: null }],
+    ["changing due date", { dueDate: "2026-12-01" }],
+    ["an empty patch", {}],
+  ])("locks %s", (_label, patch) => {
+    expect(classifyPatchForCompletedTask(patch)).toBe("locked");
+  });
+});
+
+describe("calendar deadlines query", () => {
+  it("takes inclusive dates, at most 100 days apart", () => {
+    expect(
+      listCalendarDeadlinesQuerySchema.safeParse({ from: "2026-11-01", to: "2026-11-01" }).success,
+    ).toBe(true);
+    expect(
+      listCalendarDeadlinesQuerySchema.safeParse({ from: "2026-11-02", to: "2026-11-01" }).success,
+    ).toBe(false);
+    expect(
+      listCalendarDeadlinesQuerySchema.safeParse({ from: "2026-01-01", to: "2026-12-31" }).success,
+    ).toBe(false);
+    expect(
+      listCalendarDeadlinesQuerySchema.safeParse({ from: "bad", to: "2026-12-31" }).success,
     ).toBe(false);
   });
 });

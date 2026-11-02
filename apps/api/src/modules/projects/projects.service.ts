@@ -59,6 +59,20 @@ export class ProjectsService {
     return this.withProgress(workspaceId, rows);
   }
 
+  /** Projects with a target date inside [from, to], excluding archived ones. */
+  async targetBetween(workspaceId: string, from: string, to: string): Promise<Project[]> {
+    const rows = await this.db.project.findMany({
+      where: {
+        workspaceId,
+        status: { not: "ARCHIVED" },
+        targetDate: { gte: parseDateOnly(from), lte: parseDateOnly(to) },
+      },
+      orderBy: [{ targetDate: "asc" }, { id: "asc" }],
+      take: 200,
+    });
+    return this.withProgress(workspaceId, rows);
+  }
+
   /** Projects still in flight (planning or active), for the dashboard. */
   async inFlight(workspaceId: string, limit: number): Promise<Project[]> {
     const rows = await this.db.project.findMany({

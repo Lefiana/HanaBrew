@@ -91,3 +91,24 @@ export const taskSummarySchema = z.object({
   completionPercent: z.number().int().min(0).max(100),
 });
 export type TaskSummary = z.infer<typeof taskSummarySchema>;
+
+/**
+ * COMPLETED TASKS ARE LOCKED. Once a task is completed its details can't be edited, moved to
+ * another project or cancelled. The only permitted change is an explicit reopen (status back to
+ * TODO or IN_PROGRESS) sent on its own. Re-sending `COMPLETED` is a harmless no-op.
+ * The API enforces this (409); the web UI uses the same rule to decide what to offer.
+ */
+export const REOPEN_STATUSES = ["TODO", "IN_PROGRESS"] as const;
+
+export function classifyPatchForCompletedTask(
+  patch: Record<string, unknown>,
+): "noop" | "reopen" | "locked" {
+  const keys = Object.keys(patch).filter((key) => patch[key] !== undefined);
+  if (keys.length === 1 && keys[0] === "status") {
+    if (patch.status === "COMPLETED") return "noop";
+    if (patch.status === "TODO" || patch.status === "IN_PROGRESS") return "reopen";
+  }
+  return "locked";
+}
+
+export const isTaskLocked = (task: { status: TaskStatus }): boolean => task.status === "COMPLETED";

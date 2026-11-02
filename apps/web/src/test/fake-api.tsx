@@ -10,6 +10,7 @@ export interface FakeDb {
   events: CalendarEvent[];
   timeZone: string | null;
   dashboard?: Dashboard;
+  deadlines?: { tasks: Task[]; projects: Project[] };
   /** Every non-GET request, in order, for assertions. */
   writes: Array<{ method: string; path: string; body: Record<string, unknown> | undefined }>;
   /** Make the next write to a path fail with this API error. */
@@ -157,6 +158,9 @@ export function installFakeApi(db: FakeDb): void {
         });
         db.events.push(created);
         return json(201, created);
+      }
+      if (path === "/api/calendar-deadlines" && method === "GET") {
+        return json(200, db.deadlines ?? { tasks: [], projects: [] });
       }
       if (path === "/api/settings" && method === "GET") return json(200, { timeZone: db.timeZone });
       if (path === "/api/settings" && method === "PATCH") {

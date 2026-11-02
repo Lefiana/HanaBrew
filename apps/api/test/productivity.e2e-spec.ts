@@ -46,6 +46,7 @@ describe("every M2 route requires a session", () => {
     ["post", "/api/projects"],
     ["get", "/api/calendar-events?from=2026-11-01T00:00:00Z&to=2026-11-02T00:00:00Z"],
     ["post", "/api/calendar-events"],
+    ["get", "/api/calendar-deadlines?from=2026-11-01&to=2026-11-30"],
     ["get", "/api/settings"],
     ["patch", "/api/settings"],
     ["get", "/api/dashboard"],
@@ -99,7 +100,7 @@ describe("tasks", () => {
     expect(done.completedAt).toBeTruthy();
 
     const again = taskSchema.parse(
-      (await alice.patch(`/api/tasks/${t.id}`, { status: "COMPLETED", title: "renamed" })).body,
+      (await alice.patch(`/api/tasks/${t.id}`, { status: "COMPLETED" })).body, // repeating COMPLETED is a no-op
     );
     expect(again.completedAt).toBe(done.completedAt);
 
@@ -460,6 +461,172 @@ describe("settings and dashboard", () => {
     expect(dash.tasks.dueSoon.map((t) => t.title)).toEqual(["Due soon"]);
     expect(dash.events.upcoming.map((e) => e.title)).toEqual(["Soon"]);
     expect(dash.projects.inFlight[0]).toMatchObject({ name: "Launch", progress: { percent: 50 } });
+  });
+});
+
+describe("completed tasks are locked", () => {
+  const done = async (c: Client, body: Record<string, unknown> = {}) =>
+    newTask(c, { title: "locked one", status: "COMPLETED", ...body });
+
+  it("rejects edits to a completed task (409) and leaves it untouched", async () => {
+    const c = await Client.signUp(app, "p_lock1");
+    const project = projectSchema.parse((await c.post("/api/projects", { name: "P" })).body);
+    const t = await done(c, { title: "Shipped", priority: "HIGH", tags: ["x"] });
+
+    for (const patch of [
+      { title: "renamed" },
+      { description: "new notes" },
+      { priority: "LOW" },
+      { dueDate: "2026-12-01" },
+      { tags: ["y"] },
+      { projectId: project.id },
+      { status: "CANCELLED" },
+      { status: "TODO", title: "reopen and edit in one go" },
+    ]) {
+      const res = await c.patch(`/api/tasks/${t.id}`, patch);
+      expect(res.status, JSON.stringify(patch)).toBe(409);
+      expect(res.body.message).toMatch(/locked/i);
+    }
+    const after = taskSchema.parse((await c.get(`/api/tasks/${t.id}`)).body);
+    expect(after).toMatchObject({
+      title: "Shipped",
+      priority: "HIGH",
+      tags: ["x"],
+      status: "COMPLETED",
+      projectId: null,
+    });
+    expect(after.completedAt).toBe(t.completedAt);
+  });
+
+  it("allows an explicit reopen on its own, after which the task is editable again", async () => {
+    const c = await Client.signUp(app, "p_lock2");
+    const t = await done(c);
+    const reopened = taskSchema.parse(
+      (await c.patch(`/api/tasks/${t.id}`, { status: "TODO" })).body,
+    );
+    expect(reopened).toMatchObject({ status: "TODO", completedAt: null });
+    expect((await c.patch(`/api/tasks/${t.id}`, { title: "edited after reopen" })).status).toBe(
+      200,
+    );
+
+    const other = await done(c);
+    expect((await c.patch(`/api/tasks/${other.id}`, { status: "IN_PROGRESS" })).body.status).toBe(
+      "IN_PROGRESS",
+    );
+  });
+
+  it("reopening lowers project progress, and completing again raises it", async () => {
+    const c = await Client.signUp(app, "p_lock3");
+    const project = projectSchema.parse((await c.post("/api/projects", { name: "Progress" })).body);
+    const a = await done(c, { projectId: project.id });
+    await newTask(c, { projectId: project.id });
+    const percent = async () => (await c.get(`/api/projects/${project.id}`)).body.progress.percent;
+    expect(await percent()).toBe(50);
+    await c.patch(`/api/tasks/${a.id}`, { status: "TODO" });
+    expect(await percent()).toBe(0);
+    await c.patch(`/api/tasks/${a.id}`, { status: "COMPLETED" });
+    expect(await percent()).toBe(50);
+  });
+
+  it("cancelled tasks are excluded from progress rather than counted as incomplete", async () => {
+    const c = await Client.signUp(app, "p_lock4");
+    const project = projectSchema.parse((await c.post("/api/projects", { name: "Cancel" })).body);
+    await done(c, { projectId: project.id });
+    await done(c, { projectId: project.id });
+    const open = await newTask(c, { projectId: project.id });
+    await newTask(c, { projectId: project.id });
+    await newTask(c, { projectId: project.id });
+    const progress = async () => (await c.get(`/api/projects/${project.id}`)).body.progress;
+    expect((await progress()).percent).toBe(40); // 2 of 5
+    await c.patch(`/api/tasks/${open.id}`, { status: "CANCELLED" });
+    expect(await progress()).toMatchObject({ cancelled: 1, percent: 50 }); // 2 of 4
+  });
+
+  it("stays locked after completion even when edits race the completion request", async () => {
+    const c = await Client.signUp(app, "p_lock5");
+    const t = await newTask(c, { title: "race" });
+    const results = await Promise.all([
+      c.patch(`/api/tasks/${t.id}`, { status: "COMPLETED" }),
+      c.patch(`/api/tasks/${t.id}`, { title: "edited" }),
+      c.patch(`/api/tasks/${t.id}`, { title: "edited again" }),
+    ]);
+    expect(results.every((r) => [200, 409].includes(r.status))).toBe(true);
+    const final = taskSchema.parse((await c.get(`/api/tasks/${t.id}`)).body);
+    expect(final.status).toBe("COMPLETED");
+    expect((await c.patch(`/api/tasks/${t.id}`, { title: "too late" })).status).toBe(409);
+    expect((await c.get(`/api/tasks/${t.id}`)).body.title).toBe(final.title);
+  });
+
+  it("a completed task can still be deleted deliberately", async () => {
+    const c = await Client.signUp(app, "p_lock6");
+    const t = await done(c);
+    expect((await c.delete(`/api/tasks/${t.id}`)).status).toBe(204);
+  });
+});
+
+describe("calendar deadlines (task due dates and project target dates)", () => {
+  const range = (c: Client, from: string, to: string) =>
+    c.get(`/api/calendar-deadlines?from=${from}&to=${to}`);
+
+  it("returns tasks and projects whose dates fall in the range, and nothing else", async () => {
+    const c = await Client.signUp(app, "p_dead1");
+    const inRange = await newTask(c, { title: "in range", dueDate: "2026-11-10" });
+    const onEdge = await newTask(c, { title: "on last day", dueDate: "2026-11-30" });
+    await newTask(c, { title: "before", dueDate: "2026-10-31" });
+    await newTask(c, { title: "after", dueDate: "2026-12-01" });
+    await newTask(c, { title: "no date" });
+    const completed = await newTask(c, {
+      title: "done",
+      dueDate: "2026-11-12",
+      status: "COMPLETED",
+    });
+    await newTask(c, { title: "cancelled", dueDate: "2026-11-13", status: "CANCELLED" });
+
+    const p = projectSchema.parse(
+      (
+        await c.post("/api/projects", {
+          name: "Launch",
+          targetDate: "2026-11-20",
+          status: "ACTIVE",
+        })
+      ).body,
+    );
+    await c.post("/api/projects", { name: "Out of range", targetDate: "2027-01-05" });
+    await c.post("/api/projects", { name: "No date" });
+    await c.post("/api/projects", {
+      name: "Archived one",
+      targetDate: "2026-11-21",
+      status: "ARCHIVED",
+    });
+
+    const res = await range(c, "2026-11-01", "2026-11-30");
+    expect(res.status).toBe(200);
+    // ordered by due date; cancelled, out-of-range and undated tasks are excluded; completed ones are kept
+    expect(res.body.tasks.map((t: { id: string }) => t.id)).toEqual([
+      inRange.id,
+      completed.id,
+      onEdge.id,
+    ]);
+    expect(res.body.projects.map((x: { id: string }) => x.id)).toEqual([p.id]); // archived/out-of-range/undated excluded
+    expect(res.body.projects[0].progress).toBeDefined(); // full objects, so the calendar can open them
+  });
+
+  it("only ever returns the caller's own deadlines", async () => {
+    await newTask(alice, { title: "alice deadline", dueDate: "2031-03-10" });
+    await alice.post("/api/projects", { name: "alice project deadline", targetDate: "2031-03-12" });
+    const mine = await range(alice, "2031-03-01", "2031-03-31");
+    expect(mine.body.tasks).toHaveLength(1);
+    expect(mine.body.projects).toHaveLength(1);
+    const theirs = await range(bob, "2031-03-01", "2031-03-31");
+    expect(theirs.body).toEqual({ tasks: [], projects: [] });
+  });
+
+  it("validates the range", async () => {
+    const c = await Client.signUp(app, "p_dead2");
+    expect((await range(c, "2026-11-30", "2026-11-01")).status).toBe(400);
+    expect((await range(c, "2026-01-01", "2026-12-31")).status).toBe(400);
+    expect((await range(c, "nope", "2026-12-31")).status).toBe(400);
+    expect((await c.get("/api/calendar-deadlines")).status).toBe(400);
   });
 });
 

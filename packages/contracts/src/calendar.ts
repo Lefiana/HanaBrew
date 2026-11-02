@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { MS_PER_DAY, isoInstantSchema, timeZoneSchema, uuidSchema } from "./common.js";
+import {
+  MS_PER_DAY,
+  isoDateSchema,
+  isoInstantSchema,
+  timeZoneSchema,
+  uuidSchema,
+} from "./common.js";
+import { projectSchema } from "./projects.js";
+import { taskSchema } from "./tasks.js";
 
 /**
  * TIME MODEL
@@ -118,3 +126,31 @@ export const listCalendarEventsQuerySchema = z
     }
   });
 export type ListCalendarEventsQuery = z.input<typeof listCalendarEventsQuerySchema>;
+
+/**
+ * Deadlines shown on the calendar: open and completed tasks with a due date, and projects with a
+ * target date, within [from, to] (inclusive calendar dates). Cancelled tasks and archived projects
+ * are not deadlines. Dates are floating (no zone), like all-day events.
+ */
+export const listCalendarDeadlinesQuerySchema = z
+  .object({ from: isoDateSchema, to: isoDateSchema })
+  .superRefine((value, ctx) => {
+    const from = new Date(`${value.from}T00:00:00Z`).getTime();
+    const to = new Date(`${value.to}T00:00:00Z`).getTime();
+    if (to < from)
+      ctx.addIssue({ code: "custom", path: ["to"], message: "`to` can't be before `from`." });
+    else if ((to - from) / MS_PER_DAY > MAX_RANGE_DAYS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["to"],
+        message: `Ask for at most ${MAX_RANGE_DAYS} days at a time.`,
+      });
+    }
+  });
+export type ListCalendarDeadlinesQuery = z.input<typeof listCalendarDeadlinesQuerySchema>;
+
+export const calendarDeadlinesSchema = z.object({
+  tasks: z.array(taskSchema),
+  projects: z.array(projectSchema),
+});
+export type CalendarDeadlines = z.infer<typeof calendarDeadlinesSchema>;

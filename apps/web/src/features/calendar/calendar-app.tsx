@@ -1,23 +1,29 @@
 "use client";
 
-import type { CalendarEvent } from "@hanabrew/contracts";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import type { CalendarEvent, Project, Task } from "@hanabrew/contracts";
+import { Check, ChevronLeft, ChevronRight, Flag, ListChecks, Plus } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ProjectForm } from "@/features/projects/project-form";
+import { useProjects } from "@/features/projects/use-projects";
 import { useTimeZone } from "@/features/settings/use-time-zone";
+import { TaskForm } from "@/features/tasks/task-form";
 import { errorMessageOf } from "@/lib/api-client";
 import { cn } from "@/lib/cn";
 import { formatDateKey, formatTime, zonedDateKey, zonedParts } from "@/lib/tz";
 import {
+  deadlinesForDay,
   eventsForDay,
   layoutDay,
   monthGrid,
   navigate,
   viewRange,
+  visibleKeys,
   weekKeys,
   type CalendarView,
 } from "./calendar-layout";
 import { EventForm } from "./event-form";
+import { useDeadlines } from "./use-deadlines";
 import { useEvents } from "./use-events";
 
 const HOUR_PX = 48;
@@ -26,10 +32,25 @@ const VIEWS: Array<{ id: CalendarView; label: string }> = [
   { id: "week", label: "Week" },
   { id: "day", label: "Day" },
 ];
+
 type Editing =
   | { kind: "new"; date: string; hour?: number | undefined }
   | { kind: "edit"; event: CalendarEvent }
+  | { kind: "task"; task: Task }
+  | { kind: "project"; project: Project }
   | null;
+
+/** One entry in a day cell or the all-day row. */
+type DayItem =
+  | { kind: "event"; event: CalendarEvent }
+  | { kind: "task"; task: Task }
+  | { kind: "project"; project: Project };
+
+interface Openers {
+  onOpenEvent: (event: CalendarEvent) => void;
+  onOpenTask: (task: Task) => void;
+  onOpenProject: (project: Project) => void;
+}
 
 function titleFor(view: CalendarView, anchor: string): string {
   if (view === "month") return formatDateKey(anchor, { month: "long", year: "numeric" });
@@ -52,17 +73,42 @@ export function CalendarApp() {
   const [editing, setEditing] = useState<Editing>(null);
 
   const range = useMemo(() => viewRange(view, anchor, timeZone), [view, anchor, timeZone]);
+  const dateRange = useMemo(() => {
+    const keys = visibleKeys(view, anchor);
+    return { from: keys[0]!, to: keys[keys.length - 1]! };
+  }, [view, anchor]);
   const events = useEvents(range);
+  const deadlines = useDeadlines(dateRange);
+  const projects = useProjects(true);
   const list = events.data ?? [];
 
+  const openers: Openers = {
+    onOpenEvent: (event) => setEditing({ kind: "edit", event }),
+    onOpenTask: (task) => setEditing({ kind: "task", task }),
+    onOpenProject: (project) => setEditing({ kind: "project", project }),
+  };
+
   if (editing) {
+    const close = () => setEditing(null);
+    if (editing.kind === "task") {
+      return (
+        <TaskForm
+          task={editing.task}
+          projects={(projects.data ?? []).filter(
+            (p) => p.status !== "ARCHIVED" || p.id === editing.task.projectId,
+          )}
+          onDone={close}
+        />
+      );
+    }
+    if (editing.kind === "project") return <ProjectForm project={editing.project} onDone={close} />;
     return (
       <EventForm
         event={editing.kind === "edit" ? editing.event : undefined}
         defaultDate={editing.kind === "new" ? editing.date : anchor}
         defaultHour={editing.kind === "new" ? editing.hour : undefined}
         timeZone={timeZone}
-        onDone={() => setEditing(null)}
+        onDone={close}
       />
     );
   }
@@ -118,9 +164,29 @@ export function CalendarApp() {
         </Button>
       </header>
 
+      <ul
+        aria-label="Legend"
+        className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border px-3 py-1.5 text-xs text-muted"
+      >
+        <li className="flex items-center gap-1.5">
+          <span aria-hidden className="size-2.5 rounded-sm bg-accent" /> Event
+        </li>
+        <li className="flex items-center gap-1.5">
+          <ListChecks aria-hidden className="size-3.5" /> Task due
+        </li>
+        <li className="flex items-center gap-1.5">
+          <Flag aria-hidden className="size-3.5" /> Project deadline
+        </li>
+      </ul>
+
       {events.isError && (
         <p role="alert" className="px-4 py-2 text-sm text-danger">
           {errorMessageOf(events.error)}
+        </p>
+      )}
+      {deadlines.isError && (
+        <p role="alert" className="px-4 py-2 text-sm text-danger">
+          Couldn’t load deadlines. {errorMessageOf(deadlines.error)}
         </p>
       )}
 
@@ -130,8 +196,9 @@ export function CalendarApp() {
             anchor={anchor}
             todayKey={todayKey}
             events={list}
+            deadlines={deadlines.data}
             timeZone={timeZone}
-            onOpenEvent={(event) => setEditing({ kind: "edit", event })}
+            {...openers}
             onNewEvent={(date) => setEditing({ kind: "new", date })}
             onOpenDay={(date) => {
               setAnchor(date);
@@ -143,8 +210,9 @@ export function CalendarApp() {
             keys={view === "day" ? [anchor] : weekKeys(anchor)}
             todayKey={todayKey}
             events={list}
+            deadlines={deadlines.data}
             timeZone={timeZone}
-            onOpenEvent={(event) => setEditing({ kind: "edit", event })}
+            {...openers}
             onNewEvent={(date, hour) => setEditing({ kind: "new", date, hour })}
           />
         )}
@@ -180,23 +248,93 @@ function EventChip({
   );
 }
 
+function TaskDeadlineChip({ task, onOpen }: { task: Task; onOpen: (t: Task) => void }) {
+  const done = task.status === "COMPLETED";
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(task)}
+      title={`Task due: ${task.title}${done ? " (completed)" : ""}`}
+      aria-label={`Task due: ${task.title}${done ? " (completed)" : ""}`}
+      className={cn(
+        "flex w-full items-center gap-1 truncate rounded border border-secondary bg-surface px-1.5 py-0.5 text-left text-xs",
+        done && "text-muted line-through",
+      )}
+    >
+      {done ? (
+        <Check aria-hidden className="size-3 shrink-0" />
+      ) : (
+        <ListChecks aria-hidden className="size-3 shrink-0" />
+      )}
+      <span className="truncate">{task.title}</span>
+    </button>
+  );
+}
+
+function ProjectDeadlineChip({
+  project,
+  onOpen,
+}: {
+  project: Project;
+  onOpen: (p: Project) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(project)}
+      title={`Project deadline: ${project.name}`}
+      aria-label={`Project deadline: ${project.name}`}
+      className="flex w-full items-center gap-1 truncate rounded border border-accent bg-accent/25 px-1.5 py-0.5 text-left text-xs font-medium"
+    >
+      <Flag aria-hidden className="size-3 shrink-0" />
+      <span className="truncate">{project.name}</span>
+    </button>
+  );
+}
+
+function ItemChip({
+  item,
+  timeZone,
+  onOpenEvent,
+  onOpenTask,
+  onOpenProject,
+}: { item: DayItem; timeZone: string } & Openers) {
+  if (item.kind === "event")
+    return <EventChip event={item.event} timeZone={timeZone} onOpen={onOpenEvent} />;
+  if (item.kind === "task") return <TaskDeadlineChip task={item.task} onOpen={onOpenTask} />;
+  return <ProjectDeadlineChip project={item.project} onOpen={onOpenProject} />;
+}
+
+/** All-day events first, then project and task deadlines (these are all date-only things). */
+function dateOnlyItems(
+  deadlines: ReturnType<typeof deadlinesForDay>,
+  allDay: CalendarEvent[],
+): DayItem[] {
+  return [
+    ...allDay.map((event): DayItem => ({ kind: "event", event })),
+    ...deadlines.projects.map((project): DayItem => ({ kind: "project", project })),
+    ...deadlines.tasks.map((task): DayItem => ({ kind: "task", task })),
+  ];
+}
+
 function MonthView({
   anchor,
   todayKey,
   events,
+  deadlines,
   timeZone,
-  onOpenEvent,
   onNewEvent,
   onOpenDay,
+  ...openers
 }: {
   anchor: string;
   todayKey: string;
   events: CalendarEvent[];
+  deadlines: ReturnType<typeof useDeadlines>["data"];
   timeZone: string;
-  onOpenEvent: (e: CalendarEvent) => void;
   onNewEvent: (date: string) => void;
   onOpenDay: (date: string) => void;
-}) {
+} & Openers) {
   const weeks = monthGrid(anchor);
   return (
     <div className="flex min-h-full min-w-[34rem] flex-col">
@@ -215,7 +353,14 @@ function MonthView({
           <div key={row} className="grid grid-cols-7">
             {week.map((cell) => {
               const { allDay, timed } = eventsForDay(events, cell.key, timeZone);
-              const items = [...allDay, ...timed];
+              // Events come first (all-day, then timed); deadline markers follow, so they never crowd out events.
+              const day = deadlinesForDay(deadlines, cell.key);
+              const items: DayItem[] = [
+                ...allDay.map((event): DayItem => ({ kind: "event", event })),
+                ...timed.map((event): DayItem => ({ kind: "event", event })),
+                ...day.projects.map((project): DayItem => ({ kind: "project", project })),
+                ...day.tasks.map((task): DayItem => ({ kind: "task", task })),
+              ];
               return (
                 <div
                   key={cell.key}
@@ -237,13 +382,8 @@ function MonthView({
                     {cell.day}
                   </button>
                   <div className="flex flex-col gap-0.5">
-                    {items.slice(0, 3).map((event) => (
-                      <EventChip
-                        key={event.id}
-                        event={event}
-                        timeZone={timeZone}
-                        onOpen={onOpenEvent}
-                      />
+                    {items.slice(0, 3).map((item) => (
+                      <ItemChip key={itemKey(item)} item={item} timeZone={timeZone} {...openers} />
                     ))}
                     {items.length > 3 && (
                       <button
@@ -265,28 +405,39 @@ function MonthView({
   );
 }
 
+const itemKey = (item: DayItem): string =>
+  item.kind === "event"
+    ? `e-${item.event.id}`
+    : item.kind === "task"
+      ? `t-${item.task.id}`
+      : `p-${item.project.id}`;
+
 function TimeGrid({
   keys,
   todayKey,
   events,
+  deadlines,
   timeZone,
-  onOpenEvent,
   onNewEvent,
+  ...openers
 }: {
   keys: string[];
   todayKey: string;
   events: CalendarEvent[];
+  deadlines: ReturnType<typeof useDeadlines>["data"];
   timeZone: string;
-  onOpenEvent: (e: CalendarEvent) => void;
   onNewEvent: (date: string, hour: number) => void;
-}) {
+} & Openers) {
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scroller.current?.scrollTo({ top: 7 * HOUR_PX });
   }, [keys.length]);
 
-  const columns = keys.map((key) => ({ key, ...eventsForDay(events, key, timeZone) }));
-  const hasAllDay = columns.some((c) => c.allDay.length > 0);
+  const columns = keys.map((key) => {
+    const { allDay, timed } = eventsForDay(events, key, timeZone);
+    return { key, timed, topItems: dateOnlyItems(deadlinesForDay(deadlines, key), allDay) };
+  });
+  const hasTopItems = columns.some((c) => c.topItems.length > 0);
   const now = zonedParts(new Date(), timeZone);
   const nowOffset = (now.hour * 60 + now.minute) * (HOUR_PX / 60);
   const template = { gridTemplateColumns: `3.5rem repeat(${keys.length}, minmax(0, 1fr))` };
@@ -312,18 +463,13 @@ function TimeGrid({
               </div>
             ))}
           </div>
-          {hasAllDay && (
+          {hasTopItems && (
             <div className="grid border-t border-border" style={template}>
               <div className="px-1 py-1 text-right text-[10px] text-muted">all-day</div>
-              {columns.map(({ key, allDay }) => (
+              {columns.map(({ key, topItems }) => (
                 <div key={key} className="flex flex-col gap-0.5 border-l border-border p-0.5">
-                  {allDay.map((event) => (
-                    <EventChip
-                      key={event.id}
-                      event={event}
-                      timeZone={timeZone}
-                      onOpen={onOpenEvent}
-                    />
+                  {topItems.map((item) => (
+                    <ItemChip key={itemKey(item)} item={item} timeZone={timeZone} {...openers} />
                   ))}
                 </div>
               ))}
@@ -377,7 +523,7 @@ function TimeGrid({
                 <button
                   key={event.id}
                   type="button"
-                  onClick={() => onOpenEvent(event)}
+                  onClick={() => openers.onOpenEvent(event)}
                   title={`${event.title}, ${formatTime(event.start, timeZone)} to ${formatTime(event.end, timeZone)}`}
                   className="absolute z-[2] overflow-hidden rounded border border-surface bg-accent px-1 py-0.5 text-left text-xs text-on-accent"
                   style={{

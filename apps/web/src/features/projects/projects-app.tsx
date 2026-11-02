@@ -2,11 +2,10 @@
 
 import type { Project, Task } from "@hanabrew/contracts";
 import { ArchiveRestore, ChevronLeft, FolderArchive, Pencil, Plus, Trash2 } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { useTimeZone } from "@/features/settings/use-time-zone";
 import { TaskForm } from "@/features/tasks/task-form";
@@ -168,13 +167,26 @@ function ProjectDetail({
   const tasks = useTasks({ projectId: project.id, sort: "dueDate", order: "asc" });
   const projects = useProjects(true);
   const { update: updateProject, remove: removeProject } = useProjectMutations();
-  const { create, update } = useTaskMutations();
-  const [quickTitle, setQuickTitle] = useState("");
+  const { update } = useTaskMutations();
   const [error, setError] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [creatingTask, setCreatingTask] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const archived = project.status === "ARCHIVED";
   const p = project.progress;
+
+  if (creatingTask) {
+    // The full task form, with every field available up front and this project preselected.
+    return (
+      <TaskForm
+        projects={(projects.data ?? []).filter(
+          (x) => x.status !== "ARCHIVED" || x.id === project.id,
+        )}
+        defaultProjectId={project.id}
+        onDone={() => setCreatingTask(false)}
+      />
+    );
+  }
 
   if (editingTask) {
     return (
@@ -186,19 +198,6 @@ function ProjectDetail({
         onDone={() => setEditingTask(null)}
       />
     );
-  }
-
-  async function addTask(event: FormEvent) {
-    event.preventDefault();
-    const title = quickTitle.trim();
-    if (!title) return;
-    setError(null);
-    try {
-      await create.mutateAsync({ title, projectId: project.id });
-      setQuickTitle("");
-    } catch (e) {
-      setError(errorMessageOf(e));
-    }
   }
 
   async function run(action: () => Promise<unknown>) {
@@ -302,6 +301,11 @@ function ProjectDetail({
             </span>
           </div>
           <ProgressBar percent={p.percent} label={`${project.name} progress`} className="mt-1.5" />
+          {p.cancelled > 0 && (
+            <p className="mt-1 text-xs text-muted">
+              Cancelled tasks aren’t counted towards progress.
+            </p>
+          )}
         </div>
         {error && (
           <p role="alert" className="mt-2 text-xs text-danger">
@@ -311,18 +315,12 @@ function ProjectDetail({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        <form onSubmit={addTask} className="mb-3 flex gap-2">
-          <Input
-            aria-label="Add a task to this project"
-            placeholder="Add a task to this project…"
-            value={quickTitle}
-            onChange={(e) => setQuickTitle(e.target.value)}
-            maxLength={200}
-          />
-          <Button type="submit" disabled={create.isPending || !quickTitle.trim()}>
-            <Plus aria-hidden className="size-4" /> Add
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Tasks</h3>
+          <Button size="sm" onClick={() => setCreatingTask(true)}>
+            <Plus aria-hidden className="size-4" /> New task
           </Button>
-        </form>
+        </div>
         {tasks.isPending ? (
           <p className="text-sm text-muted" role="status">
             Loading tasks…

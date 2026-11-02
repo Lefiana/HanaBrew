@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { installFakeApi, newDb, project, renderWithQuery, task } from "@/test/fake-api";
@@ -28,13 +28,14 @@ describe("ProjectsApp", () => {
     expect(await screen.findByText("Old thing")).toBeInTheDocument();
   });
 
-  it("opens a project to show its tasks and progress, and adds a task to it", async () => {
+  it("opens a project to show its tasks and progress", async () => {
     const p = project({ name: "Cafe launch", progress });
-    const db = newDb({
-      projects: [p],
-      tasks: [task({ title: "Pick a menu", projectId: p.id }), task({ title: "Unrelated" })],
-    });
-    installFakeApi(db);
+    installFakeApi(
+      newDb({
+        projects: [p],
+        tasks: [task({ title: "Pick a menu", projectId: p.id }), task({ title: "Unrelated" })],
+      }),
+    );
     const user = userEvent.setup();
     renderWithQuery(<ProjectsApp />);
 
@@ -43,15 +44,79 @@ describe("ProjectsApp", () => {
     expect(within(tasks).getByText("Pick a menu")).toBeInTheDocument();
     expect(within(tasks).queryByText("Unrelated")).not.toBeInTheDocument();
     expect(screen.getByText("50% complete")).toBeInTheDocument();
+    expect(screen.getByText(/Cancelled tasks aren’t counted towards progress/)).toBeInTheDocument();
+  });
 
-    await user.type(screen.getByLabelText("Add a task to this project"), "Hire barista{Enter}");
-    await waitFor(() =>
-      expect(db.writes[0]).toMatchObject({
-        method: "POST",
-        path: "/api/tasks",
-        body: { title: "Hire barista", projectId: p.id },
+  it("'New task' opens the FULL task form with this project preselected, and saves every field in one go", async () => {
+    const p = project({ name: "Cafe launch", progress });
+    const db = newDb({ projects: [p, project({ name: "Other" })] });
+    installFakeApi(db);
+    const user = userEvent.setup();
+    renderWithQuery(<ProjectsApp />);
+
+    await user.click(await screen.findByText("Cafe launch"));
+    expect(screen.queryByLabelText("Add a task to this project")).not.toBeInTheDocument(); // no title-only quick add any more
+    await user.click(await screen.findByRole("button", { name: /New task/ }));
+
+    expect(await screen.findByRole("heading", { name: "New task" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Project")).toHaveValue(p.id); // preselected
+    for (const field of ["Title", "Description", "Status", "Priority", "Due date", "Tags"]) {
+      expect(screen.getByLabelText(field)).toBeInTheDocument(); // everything is available upfront
+    }
+
+    await user.type(screen.getByLabelText("Title"), "Hire barista");
+    await user.type(screen.getByLabelText("Description"), "Interview three people");
+    await user.selectOptions(screen.getByLabelText("Priority"), "HIGH");
+    fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2030-12-01" } });
+    await user.type(screen.getByLabelText("Tags"), "staff, hiring");
+    await user.click(screen.getByRole("button", { name: "Add task" }));
+
+    await waitFor(() => expect(db.writes).toHaveLength(1));
+    expect(db.writes[0]).toMatchObject({
+      method: "POST",
+      path: "/api/tasks",
+      body: {
+        title: "Hire barista",
+        description: "Interview three people",
+        status: "TODO",
+        priority: "HIGH",
+        dueDate: "2030-12-01",
+        projectId: p.id,
+        tags: ["staff", "hiring"],
+      },
+    });
+    expect(await screen.findByRole("heading", { name: "Cafe launch" })).toBeInTheDocument(); // back on the project
+  });
+
+  it("cancelling the new-task form returns to the project without saving", async () => {
+    const p = project({ name: "Cafe launch" });
+    const db = newDb({ projects: [p] });
+    installFakeApi(db);
+    const user = userEvent.setup();
+    renderWithQuery(<ProjectsApp />);
+
+    await user.click(await screen.findByText("Cafe launch"));
+    await user.click(await screen.findByRole("button", { name: /New task/ }));
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("heading", { name: "Cafe launch" })).toBeInTheDocument();
+    expect(db.writes).toHaveLength(0);
+  });
+
+  it("a completed task inside a project opens locked", async () => {
+    const p = project({ name: "Cafe launch" });
+    installFakeApi(
+      newDb({
+        projects: [p],
+        tasks: [task({ title: "Done deal", projectId: p.id, status: "COMPLETED" })],
       }),
     );
+    const user = userEvent.setup();
+    renderWithQuery(<ProjectsApp />);
+
+    await user.click(await screen.findByText("Cafe launch"));
+    await user.click(await screen.findByText("Done deal"));
+    expect(await screen.findByRole("heading", { name: "Completed task" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
   });
 
   it("archives a project from its detail view", async () => {

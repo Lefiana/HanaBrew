@@ -8,7 +8,9 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from "@hanabrew/contracts";
+import { isTaskLocked } from "@hanabrew/contracts";
 import { useState, type FormEvent } from "react";
+import { CompletedTaskView } from "./completed-task-view";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -31,7 +33,15 @@ const parseTags = (raw: string): string[] =>
     .map((tag) => tag.replace(/^#/, "").trim())
     .filter(Boolean);
 
-export function TaskForm({ task, projects, defaultProjectId, onDone }: TaskFormProps) {
+export function TaskForm(props: TaskFormProps) {
+  // Completed tasks are locked: show them read-only (with an explicit Reopen) instead of the editor.
+  if (props.task && isTaskLocked(props.task)) {
+    return <CompletedTaskView task={props.task} projects={props.projects} onDone={props.onDone} />;
+  }
+  return <TaskEditor {...props} />;
+}
+
+function TaskEditor({ task, projects, defaultProjectId, onDone }: TaskFormProps) {
   const { create, update, remove } = useTaskMutations();
   const [title, setTitle] = useState(task?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
@@ -97,7 +107,17 @@ export function TaskForm({ task, projects, defaultProjectId, onDone }: TaskFormP
         />
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field id="task-status" label="Status">
+        <Field
+          id="task-status"
+          label="Status"
+          hint={
+            status === "CANCELLED"
+              ? "Cancelled tasks don't count towards project progress."
+              : status === "COMPLETED"
+                ? "Once completed, a task is locked until you reopen it."
+                : undefined
+          }
+        >
           <Select
             id="task-status"
             value={status}

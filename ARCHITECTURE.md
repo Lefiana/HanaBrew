@@ -100,6 +100,22 @@ The conversion helpers live in `packages/contracts` (`allDayToInstants`, `instan
 
 Never stored and never produced by AI: `percent = completed / (total − cancelled)`, computed per request from task rows with one grouped query (`ProjectsService.withProgress`); the dashboard uses the same code.
 
+### Completed tasks are locked
+
+A completed task is immutable except for an explicit **reopen**. The rule is one pure function shared by API and web
+(`classifyPatchForCompletedTask` in `packages/contracts/src/tasks.ts`): for a completed task a PATCH is a `reopen` (a lone `status` of `TODO`/`IN_PROGRESS`),
+a harmless `noop` (a lone `COMPLETED`), or `locked` (anything else, including cancelling, moving project, or reopening _and_ editing in one request).
+
+- **API:** `locked` → **409 Conflict**. The write is _conditional on the status that was validated_ (`updateMany ... where status = <read status>`), so a request racing the completion can't slip an edit in after it; the loser gets a 409 "changed elsewhere".
+- **UI:** the list checkbox for a completed task is disabled with an explanation; opening it shows a read-only view whose only mutations are _Reopen task…_ (confirmation step) and _Delete_ (confirmation step).
+- Reopening lowers project progress by design; completing again raises it. Cancelled tasks are **excluded** from the progress denominator (2 done of 5, one cancelled = 2/4 = 50%), and the UI says so.
+
+### Calendar deadlines
+
+`GET /api/calendar-deadlines?from&to` (inclusive dates, ≤100 days) returns full task and project objects, scoped to the caller's workspace:
+tasks with a due date in range (open **and** completed; cancelled excluded) and projects with a target date in range (archived excluded). Dates are floating, matched by date key.
+Returning full objects lets the calendar open the real task/project editors in place. In month cells, events are listed first, then project deadlines, then task deadlines, so deadline markers never crowd out events ("+N more" opens the day view).
+
 ### M2 decisions
 
 | Decision                                                                 | Why                                                                                                   |
