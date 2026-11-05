@@ -27,7 +27,13 @@ a desktop with draggable/resizable windows, dock, launcher (Ctrl/⌘ K) and a re
 - **Dashboard widgets** (desktop side panel and mobile home): task progress ring, due soon, coming up, projects in flight, all computed by the API.
 - **Settings**: theme, motion, **time zone**, account.
 
-**Not built yet:** HanaAI chat and the chibi companion (M3), journal and memory (M4).
+- **HanaAI**: chat with Hana. She can search, create and update tasks, projects and calendar events, and prepare a weekly summary,
+  through 14 fixed tools. **She asks you first** before deleting anything or changing many items at once (and, if you choose strict mode,
+  before every change). Completed tasks stay locked to her too. Your conversations and API keys are private to you.
+  Gemini, Groq and Ollama (local) are supported; see "Setting up Hana".
+
+**Not built yet:** the chibi companion art (a placeholder avatar with seven moods is in place; swap points are documented in
+`hana-avatar.tsx`), streaming replies, journal and long-term memory (M4).
 
 ## Stack
 
@@ -93,6 +99,37 @@ docker compose up --build        # postgres → migrate (one-shot) → api → w
 
 See [docs/deployment/docker.md](./docs/deployment/docker.md) for migrations, backups, restore and HTTPS.
 
+## Setting up Hana (AI)
+
+1. **Optional but recommended:** set `APP_ENCRYPTION_KEY` in `.env` (32+ random characters) and restart the API. It encrypts API keys you save in
+   Settings (AES-256-GCM, bound to your account). Without it you can't save personal keys; server-level keys (below) still work.
+2. Open **Settings → Hana's AI** and pick a provider:
+   - **Gemini / Groq:** paste your API key, click **Load models**, choose one, **Save**, then **Test connection**.
+     (Model names change often, so the list is loaded live from the provider; nothing is hard-coded.)
+   - **Ollama (runs on your machine):** install Ollama, `ollama pull <a tool-capable model>`, then choose the model in Settings.
+     Not every local model supports tools; the test button tells you if yours doesn't.
+3. Open **HanaAI** and say hi.
+
+**Server-level keys** (optional, for a personal self-hosted install): `GEMINI_API_KEY`, `GROQ_API_KEY` in `.env` act as defaults for users
+who haven't saved their own. A user's own key always wins.
+
+**Ollama from Docker:** the API container reaches Ollama on your machine through `host.docker.internal` (set via `DOCKER_OLLAMA_BASE_URL`;
+the compose file adds the host gateway for Linux). Make sure Ollama listens on an address the container can reach.
+
+**What Hana can do** (the complete list; nothing else is reachable):
+
+| Kind                                     | Tools                                                                                                                           |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Look things up                           | `search_tasks`, `get_task_overview`, `list_projects`, `get_project_progress`, `list_calendar_events`, `generate_weekly_summary` |
+| Create / change (no approval by default) | `create_task`, `update_task`, `create_project`, `create_calendar_event`, `update_calendar_event`                                |
+| **Always asks you first**                | `delete_task`, `delete_calendar_event`, `bulk_update_tasks` (several tasks at once)                                             |
+
+**How it stays safe** (details in [ARCHITECTURE.md](./ARCHITECTURE.md) and [docs/development/ai.md](./docs/development/ai.md)):
+tools run through the same services and workspace scoping as the normal API (the model can't choose a user or workspace); approvals expire after
+15 minutes and run at most once; completed tasks can't be edited or reopened by Hana; text inside your tasks is treated as data, not instructions;
+a model that loops is stopped after 6 steps; every tool call is logged (Settings → "Show recent AI activity"); and Hana **never** falls back from
+your preferred provider to a cloud provider unless you switch on "Allow falling back to a cloud provider".
+
 ## API overview (all routes except health and auth need a session)
 
 | Route                                                                                       | Purpose                                                                                                      |
@@ -122,40 +159,32 @@ docs/                 architecture, development and deployment docs
 More: [ARCHITECTURE.md](./ARCHITECTURE.md) · [docs/development/adding-an-app.md](./docs/development/adding-an-app.md) ·
 [docs/development/troubleshooting.md](./docs/development/troubleshooting.md).
 
-## Verification status (M0 + M1 + M2)
+## Verification status (M0 – M3)
 
 Honest account of what has and has not been run.
 
 **Run and passing in the authoring sandbox** (Node 22, PostgreSQL 16 + pgvector 0.6), from a clean install:
 
-- `pnpm install --frozen-lockfile`, then Turborepo `build`, `lint`, `typecheck` and `test`: **15/15 tasks**, repeated 3× to check for flakiness.
-- **Unit/component tests: 208**: contracts 38, API 33, web 137 (96 logic tests including DST, all-day, calendar layout and deadline
-  matching, plus 41 component tests that render each app in jsdom against a fake API and drive real interactions: quick-add, whole-card
-  click, completing, the locked read-only view and confirmed reopen, the full task form inside a project, calendar event creation with exact
-  instants and deadlines on the calendar, validation errors, time-zone saving).
-- **API e2e tests: 65** against real PostgreSQL: sign-up/sign-in, 401 on every private route, CRUD, filters/sort/search,
-  status/`completedAt` rules, **the completed-task lock (409 on every kind of edit, reopen allowed, progress moves accordingly)**,
-  project progress from real records (including cancelled tasks), calendar overlap and all-day rules, **calendar deadlines**, DB CHECK
-  constraints, CSRF origin check, and **tenant isolation** (a second user gets 404 on every read/update/delete of the first user's
-  tasks, projects and events, sees none of their deadlines, and can't attach tasks to their projects).
-- **Mutation checks** (I deliberately broke the code and confirmed the tests fail): removing the workspace filter (isolation tests failed);
-  disabling the completed-task lock (API tests failed); removing the lost-update guard (its unit tests failed; an e2e race test alone could
-  _not_ catch this, so it has a dedicated deterministic unit test); disabling the locked UI view and the checkbox/tag opt-out (component tests failed).
-- `next build`; the compiled API and Next standalone server were started and exercised over HTTP, including a full
-  sign-up → project → tasks → event → dashboard scenario and a forged-origin write (403).
+- Turborepo `build`, `lint`, `typecheck` and `test`: **19/19 tasks**.
+- **327 unit/component tests**: contracts 42, **ai-core 46**, API 83, web 156 (including component tests that render each app in jsdom against a fake API).
+- **116 API e2e tests** against real PostgreSQL, including **45 for AI**: tool execution, approvals (approve / decline / expire / double-click / new message while waiting),
+  strict mode, completed-task locking, tenant isolation (nobody can read, continue or approve another user's conversations or actions; tools can't touch another workspace),
+  prompt-injection resistance, step limit, provider failures (before and after an action ran), cloud-fallback privacy rules, Gemini state replay, audit retention,
+  encrypted key storage (plaintext never stored or returned), server keys, custom Ollama endpoints and their guard, rotated encryption key, rate limiting.
+- **Adapters are tested against local fake servers** that mimic each provider's documented protocol (request shape and auth, tool calls, errors, timeouts, key redaction),
+  and the **real compiled API + real Ollama adapter** were driven end to end against a stand-in Ollama server (chat → tool call → task created; delete stayed pending until approved).
+- **Mutation checks** (I broke the code on purpose and confirmed tests fail): approval requirement removed, cloud-fallback consent removed, pending-action cleanup removed,
+  Gemini thought-signature replay broken, foreign-provider flattening broken, workspace scoping removed, completed-task lock removed, race guard removed.
+  A real bug found by the tests: an IPv4-mapped IPv6 address could have bypassed the cloud-metadata guard (fixed).
 
-**Not verified here. Please run locally first:**
+**Not verified. Please check these first:**
 
-1. **Docker** (`docker compose up --build`): Dockerfiles and compose were written but there was no Docker in the sandbox
-   (you've since run the M0/M1 stack successfully; the M2 migration is new, so re-run it).
-2. **Prisma migration tooling**: the sandbox could not download Prisma's schema engine, so all three migration SQL files were
-   **written by hand** in Prisma's format and applied as plain SQL. On your machine run `pnpm db:migrate:deploy`, then
-   `pnpm db:migrate` (`prisma migrate dev`): it should report _no pending changes_. If it proposes a new migration, keep your
-   data, send me its SQL, and don't accept a reset. The `CHECK` constraints and partial index in the migrations are invisible to Prisma by design.
-3. **Real-browser behaviour**: there was no browser in the sandbox. Interactions were verified in jsdom, which does not do
-   layout, so **visual details are unchecked**: week/day grid event positioning and sizing, how deadline chips look and wrap in
-   month cells, how the dashboard column fits beside windows, scroll behaviour, and form spacing. (You have since checked the M2 layout by hand.)
-4. Prisma `migrate` and Docker on **your Windows machine** with the new migration.
+1. **Real providers.** The sandbox could not reach Gemini, Groq or Ollama. The adapters follow the providers' current official docs (verified by search), but a real
+   key may expose differences. In particular **Gemini 3+ thought signatures** (required for multi-step tool use) and each model's tool-calling quirks.
+   Use **Settings → Test connection**, then try "add a task called test" with each provider. Tell me exactly what any error says.
+2. **Prisma migrations.** All four migration SQL files were hand-written (Prisma's engine couldn't download here). Run `pnpm db:migrate:deploy` then `pnpm db:migrate`; it should report no changes.
+3. **Docker.** The compose file and Dockerfiles changed (new env vars, `ai-core`, Ollama host gateway) and were not run here.
+4. **A real browser.** The chat, approval cards and settings were verified in jsdom, which doesn't do layout, so visual details are unchecked.
 
 ## Known limitations
 
@@ -167,6 +196,8 @@ Honest account of what has and has not been run.
 - Calendar weeks start on Sunday (one constant, `WEEK_STARTS_ON`). No recurring events yet (M5), and no drag-to-move/resize of events: edit through the form.
 - A task belongs to at most one project. Tags are free text on the task (no tag management screen).
 - Completed tasks are locked, but can still be **deleted** (after a confirmation). Cancelled tasks are not locked. Reopening always returns a task to "To do". There is no audit trail of reopen events yet.
+- **AI:** no streaming (replies arrive whole). Rate limiting is in-memory per API instance. A per-conversation lock is in-process, so multiple API replicas could interleave turns in one conversation (the database's unique ordering prevents corruption). Only the last ~40 messages / 40k characters are sent to the model. There is no long-term memory yet (M4), and no usage/cost tracking: set spending limits with your provider.
+- **AI privacy:** conversations (including your task and event details Hana reads) go to the provider you choose. Choose Ollama to keep everything on your machine.
 - The calendar shows task and project deadlines read-only as markers: change a due date by opening the task. Cancelled tasks and archived projects don't appear.
 - The weekly/daily "now" line and "today" follow the chosen time zone, but the page doesn't live-update past midnight until it refreshes.
 - The `shadcn` CLI could not run offline; the UI components in `apps/web/src/components/ui` are hand-written in the shadcn style (`components.json` is included so `pnpm dlx shadcn add …` works later).

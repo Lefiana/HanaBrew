@@ -126,3 +126,58 @@ Returning full objects lets the calendar open the real task/project editors in p
 | `GET /api/dashboard` aggregates in one call                              | One round trip; all metrics computed server-side                                                      |
 | Saved time zone is `null` until chosen                                   | Lets the UI fall back to the browser's zone instead of silently assuming UTC                          |
 | Web component tests use jsdom + a fake API                               | No browser was available; they catch runtime errors and verify exact request payloads, but not layout |
+
+## M3: AI (Hana)
+
+```text
+ Web (HanaAI chat, Settings)            API: modules/ai
+   │                                      ├─ AiController (thin, rate-limited)
+   └── POST /api/ai/chat ───────────────> ├─ AiService (orchestrator: context → model → tools → persistence)
+                                          ├─ AiToolsService (the fixed 14 tools; Zod-validated; workspace-scoped services)
+                                          ├─ AiProvidersService (credentials, planning, fallback rules)
+                                          └─ AiConversationsService (transcript, audit, locks)
+                                                     │
+                                          packages/ai-core: AIProvider interface
+                                          ├─ GeminiProvider  ├─ GroqProvider  └─ OllamaProvider
+```
+
+### Layers and boundaries
+
+- **`packages/ai-core`** knows nothing about HanaBrew: the `AIProvider` interface, three adapters, schema conversion (Zod → the small JSON Schema all providers accept), error taxonomy, and Hana's persona (separate file, separate from business logic).
+  Adding a provider means implementing `generateResponse` and `listModels` (see docs/development/ai.md).
+- **Provider state** is stored per assistant message and replayed verbatim to the same provider (Gemini 3+ _requires_ its thought signatures back). A tool exchange that came from a different provider is flattened to plain text for Gemini instead of sending unsigned function calls.
+- **Credentials**: per user, encrypted with AES-256-GCM (key derived from `APP_ENCRYPTION_KEY`, ciphertext bound to `userId:provider` so it can't be moved between rows), write-only (only the last 4 characters are ever returned), redacted from every error message. Server-level env keys are an optional default.
+- **Endpoints**: a user-chosen Ollama URL makes the _server_ send requests, so it is off unless `AI_ALLOW_CUSTOM_OLLAMA_URL=true`, and even then cloud-metadata/link-local addresses (including the hex form of IPv4-mapped IPv6) are refused. This is a guard rail, not a sandbox (it doesn't resolve DNS).
+
+### The tool loop
+
+1. The identity comes from the session (never from the model). The provider plan is computed first, so a missing setup fails with a clear 422 **before anything is written**.
+2. Context = persona + the user's local date/time/zone + a server-computed snapshot of task counts + a windowed history (starts at a user message so tool calls are never orphaned).
+3. The model may request tool calls. Each is looked up in the fixed registry, its arguments are validated with Zod (invalid → the error goes back to the model to retry; the call never runs), then risk is decided:
+   `requiresConfirmation = destructive || multiRecord || (strict mode && write)`.
+4. Tools needing approval become `PENDING` actions with a **server-written summary built from the validated arguments** (the model can't dress up what an action does) and a 15-minute expiry. The turn stops and waits.
+5. Approve claims the action atomically (`PENDING → RUNNING`), re-validates, executes through the normal services, answers the model's tool call, and resumes the loop. Decline/expiry/"user moved on" are also answered in the transcript so the provider never sees an unanswered call.
+6. At most 6 model calls per request. If the very first model call fails, the user message is rolled back so a retry is clean; if it fails after an action already ran, the transcript keeps the action and says so.
+
+### Safety properties (each has tests)
+
+| Property                                      | Mechanism                                                                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| The model can't act on another user's data    | Tools take no user/workspace arguments; all go through workspace-scoped services; foreign ids are simply "not found"            |
+| Hostile text in your data can't skip approval | Approval is decided in code from the tool's declared risk, not from anything the model says; summaries come from validated args |
+| Hana can't undo your completions              | Tools refuse completed tasks (the same lock the API enforces)                                                                   |
+| No silent cloud fallback                      | `planProviders`: preferred provider never swapped; cloud fallback only with explicit consent                                    |
+| Approvals can't run twice or late             | Atomic claim; expiry; single-process lock per conversation                                                                      |
+| Audit without retention of content            | Every call is an `AiToolAction` row; deleting a conversation wipes args/summary/result but keeps the skeleton                   |
+| Keys never leave the server                   | Write-only API, encrypted at rest, redacted from errors; tested for absence in responses                                        |
+
+### M3 decisions
+
+| Decision                                                                                       | Why                                                                                                                             |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| No hard-coded model names; models are loaded live per provider                                 | Model ids change constantly (the docs themselves disagree between versions)                                                     |
+| Replies are not streamed                                                                       | Tool calls and approvals dominate the interaction; the interface allows adding `streamResponse` later without changes elsewhere |
+| Mood is derived by the server from what happened (and the UI adds thinking/listening/sleeping) | A mood is a presentation cue only and never claims anything about correctness                                                   |
+| `bulk_update_tasks` is the only multi-record tool                                              | Keeps the "always confirm bulk changes" rule concrete without a large tool surface                                              |
+| Provider failures use 422 (fix your setup) and 424 (provider down)                             | The global error filter hides 5xx messages; these statuses keep the actionable text                                             |
+| Conversations are private to the user (not just the workspace)                                 | Chats may contain anything; a future shared workspace shouldn't expose them                                                     |

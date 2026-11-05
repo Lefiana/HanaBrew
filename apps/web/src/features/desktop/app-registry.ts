@@ -56,7 +56,7 @@ export const APPLICATIONS: readonly DesktopApplication[] = [
     icon: "ai",
     route: "/apps/ai",
     windowMode: "window",
-    defaultSize: { width: 460, height: 600 },
+    defaultSize: { width: 480, height: 640 },
     pinned: true,
   },
   {

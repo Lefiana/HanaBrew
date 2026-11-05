@@ -11,6 +11,13 @@ export interface FakeDb {
   timeZone: string | null;
   dashboard?: Dashboard;
   deadlines?: { tasks: Task[]; projects: Project[] };
+  /** Handles /api/ai/* requests; return { status, body }. */
+  ai?: (request: {
+    method: string;
+    path: string;
+    body: Record<string, unknown> | undefined;
+    query: URLSearchParams;
+  }) => { status: number; body: unknown; delayMs?: number };
   /** Every non-GET request, in order, for assertions. */
   writes: Array<{ method: string; path: string; body: Record<string, unknown> | undefined }>;
   /** Make the next write to a path fail with this API error. */
@@ -93,6 +100,17 @@ export function installFakeApi(db: FakeDb): void {
         }
       }
 
+      if (path.startsWith("/api/ai/") && db.ai) {
+        const handled = db.ai({ method, path, body, query: url.searchParams });
+        if (handled.delayMs)
+          return new Promise<Response>((resolve) =>
+            setTimeout(
+              () => void json(handled.status, handled.body).then(resolve),
+              handled.delayMs,
+            ),
+          );
+        return json(handled.status, handled.body);
+      }
       if (path === "/api/tasks" && method === "GET") {
         const statuses = url.searchParams.get("status")?.split(",");
         const q = url.searchParams.get("q")?.toLowerCase();

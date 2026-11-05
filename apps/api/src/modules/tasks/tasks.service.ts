@@ -118,6 +118,16 @@ export class TasksService {
     return rows.map(toTaskDto);
   }
 
+  countCompletedBetween(workspaceId: string, from: Date, to: Date): Promise<number> {
+    return this.db.task.count({
+      where: { workspaceId, status: "COMPLETED", completedAt: { gte: from, lt: to } },
+    });
+  }
+
+  countCreatedBetween(workspaceId: string, from: Date, to: Date): Promise<number> {
+    return this.db.task.count({ where: { workspaceId, createdAt: { gte: from, lt: to } } });
+  }
+
   /** Open tasks with a due date, soonest (and most overdue) first. */
   async dueSoon(workspaceId: string, limit: number): Promise<Task[]> {
     const rows = await this.db.task.findMany({

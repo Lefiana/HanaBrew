@@ -17,6 +17,7 @@ FROM base AS build
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store pnpm install --frozen-lockfile
 RUN pnpm --filter @hanabrew/contracts build \
+ && pnpm --filter @hanabrew/ai-core build \
  && pnpm --filter @hanabrew/database build \
  && pnpm --filter @hanabrew/api build
 
@@ -31,6 +32,7 @@ FROM base AS prod-deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY packages/ai-core/package.json packages/ai-core/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/database/package.json packages/database/package.json
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
@@ -42,10 +44,13 @@ ENV NODE_ENV=production
 WORKDIR /repo
 COPY --from=prod-deps /repo/node_modules ./node_modules
 COPY --from=prod-deps /repo/apps/api/node_modules ./apps/api/node_modules
+COPY --from=prod-deps /repo/packages/ai-core/node_modules ./packages/ai-core/node_modules
 COPY --from=prod-deps /repo/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=prod-deps /repo/packages/database/node_modules ./packages/database/node_modules
 COPY --from=build /repo/apps/api/package.json ./apps/api/package.json
 COPY --from=build /repo/apps/api/dist ./apps/api/dist
+COPY --from=build /repo/packages/ai-core/package.json ./packages/ai-core/package.json
+COPY --from=build /repo/packages/ai-core/dist ./packages/ai-core/dist
 COPY --from=build /repo/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /repo/packages/contracts/dist ./packages/contracts/dist
 COPY --from=build /repo/packages/database/package.json ./packages/database/package.json

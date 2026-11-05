@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
+import { AiApp } from "@/features/ai/ai-app";
 import { CalendarApp } from "@/features/calendar/calendar-app";
-import { PlaceholderApp } from "@/features/placeholder/placeholder-app";
 import { ProjectsApp } from "@/features/projects/projects-app";
 import { SettingsApp } from "@/features/settings/settings-app";
 import { TasksApp } from "@/features/tasks/tasks-app";
@@ -13,17 +13,6 @@ export const APP_COMPONENTS: Record<string, ComponentType> = {
   tasks: TasksApp,
   calendar: CalendarApp,
   projects: ProjectsApp,
-  ai: () => (
-    <PlaceholderApp
-      name="HanaAI"
-      milestone="M3"
-      summary="Chat with Hana, your cozy assistant, through a provider-independent AI layer."
-      planned={[
-        "Gemini, Groq and Ollama providers",
-        "Approved task-creation tools",
-        "Hana's chibi companion",
-      ]}
-    />
-  ),
+  ai: AiApp,
   settings: SettingsApp,
 };

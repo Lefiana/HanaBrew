@@ -44,6 +44,30 @@ describe("parseEnv", () => {
     expect(() => parseEnv({})).toThrow(/DATABASE_URL: is required/);
   });
 
+  it("treats empty optional variables (as Docker Compose passes them) as unset", () => {
+    const env = parseEnv({
+      ...valid,
+      APP_ENCRYPTION_KEY: "",
+      GEMINI_API_KEY: "",
+      GROQ_API_KEY: "",
+      OLLAMA_BASE_URL: "",
+    });
+    expect(env.APP_ENCRYPTION_KEY).toBeUndefined();
+    expect(env.GEMINI_API_KEY).toBeUndefined();
+    expect(env.OLLAMA_BASE_URL).toBe("http://localhost:11434");
+    expect(env.AI_ALLOW_CUSTOM_OLLAMA_URL).toBe(false);
+    expect(env.AI_RATE_LIMIT_PER_MINUTE).toBe(20);
+  });
+
+  it("still rejects a bad AI setting", () => {
+    expect(() => parseEnv({ ...valid, APP_ENCRYPTION_KEY: "too-short" })).toThrow(
+      /APP_ENCRYPTION_KEY/,
+    );
+    expect(() => parseEnv({ ...valid, AI_RATE_LIMIT_PER_MINUTE: "0" })).toThrow(
+      /AI_RATE_LIMIT_PER_MINUTE/,
+    );
+  });
+
   it("rejects an empty origin list", () => {
     expect(() => parseEnv({ ...valid, CORS_ALLOWED_ORIGINS: " , " })).toThrow(EnvValidationError);
   });

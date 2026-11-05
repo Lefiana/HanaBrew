@@ -51,6 +51,16 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
+      # Hana (AI). Empty values mean "not set".
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      AI_ALLOW_CUSTOM_OLLAMA_URL: ${AI_ALLOW_CUSTOM_OLLAMA_URL:-false}
+      AI_RATE_LIMIT_PER_MINUTE: ${AI_RATE_LIMIT_PER_MINUTE:-20}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-90000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # lets the container reach Ollama running on your machine
     depends_on:
       migrate:
         condition: service_completed_successfully

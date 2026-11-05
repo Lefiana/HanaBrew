@@ -5,6 +5,7 @@ import { AllExceptionsFilter } from "./common/all-exceptions.filter.js";
 import { ConfigModule } from "./config/config.module.js";
 import { PrismaModule } from "./infrastructure/database/prisma.module.js";
 import { AppAuthModule } from "./modules/auth/index.js";
+import { AiModule } from "./modules/ai/ai.module.js";
 import { CalendarModule } from "./modules/calendar/calendar.module.js";
 import { DashboardModule } from "./modules/dashboard/dashboard.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
@@ -28,6 +29,7 @@ import { WorkspacesModule } from "./modules/workspaces/workspaces.module.js";
     ProjectsModule,
     CalendarModule,
     DashboardModule,
+    AiModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

@@ -46,9 +46,9 @@ export async function apiFetch<S extends z.ZodType>(
   return schema.parse(payload);
 }
 
-/** JSON write helper (POST/PATCH/DELETE). A 204 response resolves to `undefined`: pass `z.undefined()`. */
+/** JSON write helper (POST/PUT/PATCH/DELETE). A 204 response resolves to `undefined`: pass `z.undefined()`. */
 export function apiSend<S extends z.ZodType>(
-  method: "POST" | "PATCH" | "DELETE",
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   schema: S,
   body?: unknown,

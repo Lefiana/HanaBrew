@@ -32,6 +32,9 @@ model User {
   memberships WorkspaceMembership[]
   ownedWorkspaces Workspace[]
   settings    UserSettings?
+  aiProviders AiProviderConfig[]
+  aiSettings  AiSettings?
+  aiConversations AiConversation[]
 
   @@map("users")
 }
@@ -113,6 +116,8 @@ model Workspace {
   tasks       Task[]
   projects    Project[]
   events      CalendarEvent[]
+  aiConversations AiConversation[]
+  aiActions   AiToolAction[]
 
   @@index([ownerId])
   @@map("workspaces")
@@ -236,4 +241,145 @@ model CalendarEvent {
 
   @@index([workspaceId, startsAt])
   @@map("calendar_events")
+}
+
+// ---------------------------------------------------------------------------
+// M3: AI assistant. Credentials are per user and stored encrypted (AES-256-GCM); conversations belong
+// to a user inside a workspace; every tool call is recorded in AiToolAction (the audit log).
+// ---------------------------------------------------------------------------
+
+enum AiProvider {
+  GEMINI
+  GROQ
+  OLLAMA
+}
+
+enum AiMessageRole {
+  USER
+  ASSISTANT
+  TOOL
+}
+
+enum AiToolRisk {
+  READ
+  WRITE
+  DESTRUCTIVE
+}
+
+enum AiActionStatus {
+  PENDING
+  RUNNING
+  EXECUTED
+  REJECTED
+  FAILED
+  EXPIRED
+}
+
+enum AiConfirmationPolicy {
+  DESTRUCTIVE_ONLY
+  ALL_WRITES
+}
+
+model AiProviderConfig {
+  id              String     @id @default(uuid()) @db.Uuid
+  userId          String     @db.Uuid
+  provider        AiProvider
+  /// "v1.<iv>.<tag>.<ciphertext>" (AES-256-GCM, bound to this user + provider). Never returned by the API.
+  apiKeyEncrypted String?
+  /// Last 4 characters of the key, so the user can recognise which key is stored.
+  apiKeyHint      String?
+  model           String?
+  /// Ollama endpoint override (only honoured when the server allows custom endpoints).
+  baseUrl         String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@map("ai_provider_configs")
+}
+
+model AiSettings {
+  userId             String               @id @db.Uuid
+  preferredProvider  AiProvider?
+  fallbackProvider   AiProvider?
+  /// Falling back to a CLOUD provider sends the conversation to a third party, so it is opt-in.
+  allowCloudFallback Boolean              @default(false)
+  confirmationPolicy AiConfirmationPolicy @default(DESTRUCTIVE_ONLY)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("ai_settings")
+}
+
+model AiConversation {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  userId      String   @db.Uuid
+  title       String
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  AiMessage[]
+  actions   AiToolAction[]
+
+  @@index([workspaceId, userId, updatedAt])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String        @id @default(uuid()) @db.Uuid
+  conversationId String        @db.Uuid
+  seq            Int
+  role           AiMessageRole
+  content        String        @default("")
+  /// Assistant turns: the tool calls requested ([{ id, name, args, argsError? }]).
+  toolCalls      Json?
+  /// Opaque provider data that must be replayed verbatim (e.g. Gemini thought signatures).
+  providerState  Json?
+  /// Tool turns: which call this answers.
+  toolCallId     String?
+  toolName       String?
+  provider       AiProvider?
+  model          String?
+  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, seq])
+  @@map("ai_messages")
+}
+
+/// One row per tool call: proposed, approved/rejected, executed or failed. This is the audit log. When a
+/// conversation is deleted the row survives with its content (args, summary, result) wiped.
+model AiToolAction {
+  id             String         @id @default(uuid()) @db.Uuid
+  workspaceId    String         @db.Uuid
+  userId         String         @db.Uuid
+  conversationId String?        @db.Uuid
+  toolCallId     String
+  toolName       String
+  risk           AiToolRisk
+  status         AiActionStatus
+  args           Json
+  summary        String
+  result         Json?
+  provider       AiProvider?
+  model          String?
+  targetId       String?
+  expiresAt      DateTime?      @db.Timestamptz(3)
+  createdAt      DateTime       @default(now()) @db.Timestamptz(3)
+  resolvedAt     DateTime?      @db.Timestamptz(3)
+
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation AiConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  @@index([workspaceId, userId, createdAt])
+  @@map("ai_tool_actions")
 }

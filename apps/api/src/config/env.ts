@@ -25,6 +25,16 @@ export const envSchema = z.object({
   SWAGGER_ENABLED: booleanString.optional(),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
   APP_ENCRYPTION_KEY: z.string().min(32).optional(),
+
+  // --- AI (all optional). Server-level credentials act as defaults for users who haven't saved their own. ---
+  GEMINI_API_KEY: z.string().min(8).optional(),
+  GROQ_API_KEY: z.string().min(8).optional(),
+  OLLAMA_BASE_URL: z.url().default("http://localhost:11434"),
+  /** Lets each user point Hana at their own Ollama endpoint. Off by default: it makes the server call a user-chosen URL. */
+  AI_ALLOW_CUSTOM_OLLAMA_URL: booleanString.default(false),
+  /** Requests per minute (per client IP) for calls that reach the model. */
+  AI_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(20),
+  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(90_000),
 });
 
 export type Env = Omit<z.infer<typeof envSchema>, "SWAGGER_ENABLED"> & { SWAGGER_ENABLED: boolean };
@@ -38,7 +48,9 @@ export class EnvValidationError extends Error {
 
 /** Pure parser: validates a variable bag and applies derived defaults. Never reads process.env. */
 export function parseEnv(source: Record<string, string | undefined>): Env {
-  const result = envSchema.safeParse(source);
+  // Docker Compose passes unset optional variables as empty strings; treat those as "not set".
+  const cleaned = Object.fromEntries(Object.entries(source).filter(([, value]) => value !== ""));
+  const result = envSchema.safeParse(cleaned);
   if (!result.success) {
     throw new EnvValidationError(
       result.error.issues.map((issue) => {

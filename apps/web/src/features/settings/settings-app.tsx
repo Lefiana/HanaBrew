@@ -1,6 +1,7 @@
 "use client";
 
 import { Check } from "lucide-react";
+import { AiSettingsSection } from "@/features/ai/ai-settings-section";
 import { useTimeZone } from "@/features/settings/use-time-zone";
 import { browserTimeZone } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
@@ -160,6 +161,8 @@ export function SettingsApp() {
       </section>
 
       <TimeZoneSection />
+
+      <AiSettingsSection />
 
       <section aria-labelledby="account-heading">
         <h2 id="account-heading" className="text-lg font-semibold">
