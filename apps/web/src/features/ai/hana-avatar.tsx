@@ -9,7 +9,7 @@ import { cn } from "@/lib/cn";
  * sleeping). Nothing else needs to change: the chat only passes a mood to this component, and the mood is
  * a purely visual cue (it never says anything about whether an answer is correct).
  */
-const USE_IMAGE_ASSETS = false;
+const USE_IMAGE_ASSETS = true;
 const IMAGE_BASE = "/characters/hana";
 
 const EMOJI: Record<HanaMood, string> = {

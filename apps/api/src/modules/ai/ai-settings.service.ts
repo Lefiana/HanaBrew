@@ -14,6 +14,7 @@ export class AiSettingsService {
       fallbackProvider: row?.fallbackProvider ?? null,
       allowCloudFallback: row?.allowCloudFallback ?? false,
       confirmationPolicy: row?.confirmationPolicy ?? "DESTRUCTIVE_ONLY",
+      responseStyle: row?.responseStyle ?? "QUICK",
     };
   }
 

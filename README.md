@@ -105,7 +105,10 @@ See [docs/deployment/docker.md](./docs/deployment/docker.md) for migrations, bac
    Settings (AES-256-GCM, bound to your account). Without it you can't save personal keys; server-level keys (below) still work.
 2. Open **Settings → Hana's AI** and pick a provider:
    - **Gemini / Groq:** paste your API key, click **Load models**, choose one, **Save**, then **Test connection**.
-     (Model names change often, so the list is loaded live from the provider; nothing is hard-coded.)
+     (Model names change often, so the list is loaded live from the provider, newest first, with image/speech/embedding models hidden unless you choose "Show all".)
+     **Test connection checks the things Hana really needs**: a plain answer, a tool call, and sending the tool result back. If it says ⚠, pick another model.
+   - **Backup model (optional):** a steadier model on the same provider that Hana switches to if your main one is overloaded. Brand-new model versions often are.
+   - **Faster or smarter?** Names with `flash` or `lite` answer sooner; bigger `pro` models are smarter but slower. The chat shows the model, time and number of AI calls for each reply so you can compare.
    - **Ollama (runs on your machine):** install Ollama, `ollama pull <a tool-capable model>`, then choose the model in Settings.
      Not every local model supports tools; the test button tells you if yours doesn't.
 3. Open **HanaAI** and say hi.
@@ -123,6 +126,8 @@ the compose file adds the host gateway for Linux). Make sure Ollama listens on a
 | Look things up                           | `search_tasks`, `get_task_overview`, `list_projects`, `get_project_progress`, `list_calendar_events`, `generate_weekly_summary` |
 | Create / change (no approval by default) | `create_task`, `update_task`, `create_project`, `create_calendar_event`, `update_calendar_event`                                |
 | **Always asks you first**                | `delete_task`, `delete_calendar_event`, `bulk_update_tasks` (several tasks at once)                                             |
+
+**Speed:** by default Hana uses **Quick confirmation** after simple changes (a server-written "Done ✓ …" built from what actually happened) instead of asking the AI to write a second message, which halves the wait for things like "add a task". She still asks the AI whenever she must read something back or something goes wrong. Switch to "Hana explains in her own words" in Settings for her usual chatty replies. Brief provider overloads (503/429) are retried automatically before anything is reported.
 
 **How it stays safe** (details in [ARCHITECTURE.md](./ARCHITECTURE.md) and [docs/development/ai.md](./docs/development/ai.md)):
 tools run through the same services and workspace scoping as the normal API (the model can't choose a user or workspace); approvals expire after
@@ -166,15 +171,15 @@ Honest account of what has and has not been run.
 **Run and passing in the authoring sandbox** (Node 22, PostgreSQL 16 + pgvector 0.6), from a clean install:
 
 - Turborepo `build`, `lint`, `typecheck` and `test`: **19/19 tasks**.
-- **327 unit/component tests**: contracts 42, **ai-core 46**, API 83, web 156 (including component tests that render each app in jsdom against a fake API).
-- **116 API e2e tests** against real PostgreSQL, including **45 for AI**: tool execution, approvals (approve / decline / expire / double-click / new message while waiting),
+- **362 unit/component tests**: contracts 42, **ai-core 72**, API 86, web 162 (including component tests that render each app in jsdom against a fake API).
+- **134 API e2e tests** against real PostgreSQL, including **63 for AI**: tool execution, approvals (approve / decline / expire / double-click / new message while waiting),
   strict mode, completed-task locking, tenant isolation (nobody can read, continue or approve another user's conversations or actions; tools can't touch another workspace),
   prompt-injection resistance, step limit, provider failures (before and after an action ran), cloud-fallback privacy rules, Gemini state replay, audit retention,
-  encrypted key storage (plaintext never stored or returned), server keys, custom Ollama endpoints and their guard, rotated encryption key, rate limiting.
+  encrypted key storage (plaintext never stored or returned), server keys, custom Ollama endpoints and their guard, rotated encryption key, rate limiting, quick confirmations, backup model, retries of brief overloads, the tool-checking connection test, and model filtering.
 - **Adapters are tested against local fake servers** that mimic each provider's documented protocol (request shape and auth, tool calls, errors, timeouts, key redaction),
   and the **real compiled API + real Ollama adapter** were driven end to end against a stand-in Ollama server (chat → tool call → task created; delete stayed pending until approved).
 - **Mutation checks** (I broke the code on purpose and confirmed tests fail): approval requirement removed, cloud-fallback consent removed, pending-action cleanup removed,
-  Gemini thought-signature replay broken, foreign-provider flattening broken, workspace scoping removed, completed-task lock removed, race guard removed.
+  Gemini thought-signature replay broken, foreign-provider flattening broken, quick mode skipping the model after reads/failures, backup model never tried, retries removed, workspace scoping removed, completed-task lock removed, race guard removed.
   A real bug found by the tests: an IPv4-mapped IPv6 address could have bypassed the cloud-metadata guard (fixed).
 
 **Not verified. Please check these first:**
@@ -196,7 +201,7 @@ Honest account of what has and has not been run.
 - Calendar weeks start on Sunday (one constant, `WEEK_STARTS_ON`). No recurring events yet (M5), and no drag-to-move/resize of events: edit through the form.
 - A task belongs to at most one project. Tags are free text on the task (no tag management screen).
 - Completed tasks are locked, but can still be **deleted** (after a confirmation). Cancelled tasks are not locked. Reopening always returns a task to "To do". There is no audit trail of reopen events yet.
-- **AI:** no streaming (replies arrive whole). Rate limiting is in-memory per API instance. A per-conversation lock is in-process, so multiple API replicas could interleave turns in one conversation (the database's unique ordering prevents corruption). Only the last ~40 messages / 40k characters are sent to the model. There is no long-term memory yet (M4), and no usage/cost tracking: set spending limits with your provider.
+- **AI:** no streaming (replies arrive whole; quick confirmations and a faster model are the main speed levers). Tasks store a due **date only**, not a time of day; Hana is told to put a time in the title. Rate limiting is in-memory per API instance. A per-conversation lock is in-process, so multiple API replicas could interleave turns in one conversation (the database's unique ordering prevents corruption). Only the last ~40 messages / 40k characters are sent to the model. There is no long-term memory yet (M4), and no usage/cost tracking: set spending limits with your provider.
 - **AI privacy:** conversations (including your task and event details Hana reads) go to the provider you choose. Choose Ollama to keep everything on your machine.
 - The calendar shows task and project deadlines read-only as markers: change a due date by opening the task. Cancelled tasks and archived projects don't appear.
 - The weekly/daily "now" line and "today" follow the chosen time zone, but the page doesn't live-update past midnight until it refreshes.

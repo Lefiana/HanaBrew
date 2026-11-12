@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import { ApiCookieAuth, ApiTags } from "@nestjs/swagger";
@@ -93,11 +94,12 @@ export class AiController {
 
   @Get("providers/:provider/models")
   @Throttle(MODEL_LIMIT)
-  async models(
+  models(
     @CurrentWorkspace() ws: WorkspaceContext,
     @Param("provider", providerPipe) provider: AiProviderId,
-  ): Promise<{ models: string[] }> {
-    return { models: await this.providers.models(ws.userId, provider) };
+    @Query("all") all?: string,
+  ): Promise<{ models: string[]; hidden: number }> {
+    return this.providers.models(ws.userId, provider, all === "true");
   }
 
   @Post("providers/:provider/test")

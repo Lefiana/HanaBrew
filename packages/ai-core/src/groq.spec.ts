@@ -157,6 +157,13 @@ describe("Groq response", () => {
   });
 });
 
+describe("Groq error detail", () => {
+  it("keeps the provider's explanation for overloads", async () => {
+    server.respond(503, { error: { message: "Service temporarily unavailable. Please retry." } });
+    await expect(ask()).rejects.toThrow(/HTTP 503.*temporarily unavailable/);
+  });
+});
+
 describe("Groq errors and models", () => {
   it.each([
     [401, { error: { message: "Invalid API Key" } }, "auth"],

@@ -2,6 +2,7 @@
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootApp, Client } from "./helpers.js";
+import { ProviderError } from "@hanabrew/ai-core";
 import { ScriptedProvider } from "./scripted-provider.js";
 import type { ProviderBuildOptions } from "../src/modules/ai/provider-factory.js";
 
@@ -181,5 +182,65 @@ describe("rate limiting", () => {
       statuses.push((await c.post("/api/ai/chat", { message: `hello ${i}` })).status);
     expect(statuses).toEqual([200, 200, 200, 429, 429]);
     expect(rec.provider.requests).toHaveLength(3); // throttled requests never reached the model
+  });
+});
+
+describe("retrying brief provider overloads", () => {
+  const overloaded = () =>
+    new ProviderError(
+      "unavailable",
+      "Gemini is having trouble right now (HTTP 503): The model is overloaded.",
+      "gemini",
+      503,
+    );
+
+  it("retries a short overload on the same model and then succeeds", async () => {
+    process.env.AI_RETRIES = "2";
+    process.env.AI_RETRY_BASE_MS = "1";
+    const rec = recorder();
+    app = await bootApp(rec.factory);
+    const c = await user(app);
+    await c.put("/api/ai/providers/ollama", { model: "m" });
+    rec.provider.fail(overloaded()).fail(overloaded()).say("Third time lucky.");
+    const res = await c.post("/api/ai/chat", { message: "hello" });
+    expect(res.status).toBe(200);
+    expect(rec.provider.requests).toHaveLength(3);
+    expect(res.body.items.at(-1).content).toBe("Third time lucky.");
+  });
+
+  it("gives up after the configured retries and reports the real reason", async () => {
+    process.env.AI_RETRIES = "1";
+    process.env.AI_RETRY_BASE_MS = "1";
+    const rec = recorder();
+    app = await bootApp(rec.factory);
+    const c = await user(app);
+    await c.put("/api/ai/providers/ollama", { model: "m" });
+    rec.provider.fail(overloaded()).fail(overloaded());
+    const res = await c.post("/api/ai/chat", { message: "hello" });
+    expect(res.status).toBe(424);
+    expect(res.body.message).toMatch(/HTTP 503.*overloaded/);
+    expect(rec.provider.requests).toHaveLength(2);
+  });
+
+  it("does not retry problems a retry can't fix", async () => {
+    process.env.AI_RETRIES = "2";
+    process.env.AI_RETRY_BASE_MS = "1";
+    const rec = recorder();
+    app = await bootApp(rec.factory);
+    const c = await user(app);
+    await c.put("/api/ai/providers/ollama", { model: "m" });
+    rec.provider
+      .fail(
+        new ProviderError("model_not_found", "Ollama doesn't have the model “m”.", "ollama", 404),
+      )
+      .say("unused");
+    expect((await c.post("/api/ai/chat", { message: "hello" })).status).toBe(422);
+    expect(rec.provider.requests).toHaveLength(1);
+  });
+
+  it("defaults to quick confirmations for new users", async () => {
+    app = await bootApp(recorder().factory);
+    const c = await user(app);
+    expect((await c.get("/api/ai/overview")).body.settings.responseStyle).toBe("QUICK");
   });
 });

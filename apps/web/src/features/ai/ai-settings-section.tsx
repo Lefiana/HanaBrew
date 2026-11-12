@@ -157,6 +157,32 @@ export function AiSettingsSection() {
                 Deleting, and changing many items at once, always needs your approval.
               </p>
             </fieldset>
+            <fieldset>
+              <legend className="text-sm font-medium">How should Hana reply after a change?</legend>
+              <div className="mt-2 space-y-2">
+                {(
+                  [
+                    ["QUICK", "Quick confirmation (faster: one AI call)"],
+                    ["CHATTY", "Hana explains in her own words (friendlier, slower)"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="response-style"
+                      className="accent-[var(--hb-ring)]"
+                      checked={data.settings.responseStyle === value}
+                      onChange={() => settings.mutate({ responseStyle: value })}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-muted">
+                Quick mode still asks the AI whenever it needs to look something up or something
+                goes wrong.
+              </p>
+            </fieldset>
             {settings.isError && (
               <p role="alert" className="text-xs text-danger">
                 {errorMessageOf(settings.error)}
@@ -194,13 +220,22 @@ function ProviderCard({
   const [baseUrl, setBaseUrl] = useState(status.baseUrl ?? "");
   const [result, setResult] = useState<ProviderTestResult | null>(null);
   const [options, setOptions] = useState<string[]>([]);
+  const [hidden, setHidden] = useState(0);
+  const [showAll, setShowAll] = useState(false);
+  const [backup, setBackup] = useState(status.fallbackModel ?? "");
   const id = status.provider.toLowerCase();
   const fields = fieldErrorsOf(save.error);
 
   async function onSave() {
-    const input: { apiKey?: string; model?: string; baseUrl?: string } = {};
+    const input: {
+      apiKey?: string;
+      model?: string;
+      fallbackModel?: string | null;
+      baseUrl?: string;
+    } = {};
     if (apiKey.trim()) input.apiKey = apiKey.trim();
     if (model.trim() && model.trim() !== status.model) input.model = model.trim();
+    if (backup.trim() !== (status.fallbackModel ?? "")) input.fallbackModel = backup.trim() || null;
     if (status.customBaseUrlAllowed && baseUrl.trim() && baseUrl.trim() !== status.baseUrl)
       input.baseUrl = baseUrl.trim();
     if (Object.keys(input).length === 0) return;
@@ -211,6 +246,19 @@ function ProviderCard({
     } catch {
       /* shown below */
     }
+  }
+
+  function loadModels(all: boolean) {
+    setShowAll(all);
+    models.mutate(
+      { provider: status.provider, all },
+      {
+        onSuccess: (r) => {
+          setOptions(r.models);
+          setHidden(r.hidden);
+        },
+      },
+    );
   }
 
   return (
@@ -286,7 +334,7 @@ function ProviderCard({
         id={`${id}-model`}
         label="Model"
         error={fields.model}
-        hint="Use “Load models” to see what this provider offers right now."
+        hint="Use “Load models” to see what this provider offers right now. Faster models (names with “flash” or “lite”) answer sooner; bigger “pro” models are smarter but slower."
       >
         <div className="flex gap-2">
           <Input
@@ -304,9 +352,7 @@ function ProviderCard({
           <Button
             variant="outline"
             disabled={models.isPending || (status.needsKey && !status.hasKey)}
-            onClick={() =>
-              models.mutate(status.provider, { onSuccess: (r) => setOptions(r.models) })
-            }
+            onClick={() => loadModels(false)}
           >
             Load models
           </Button>
@@ -319,9 +365,30 @@ function ProviderCard({
       )}
       {options.length > 0 && (
         <p className="text-xs text-muted">
-          {options.length} models available. Start typing to pick one.
+          {options.length} models available
+          {hidden > 0 && !showAll ? `; ${hidden} hidden (images, speech, embeddings…)` : ""}. Start
+          typing to pick one.{" "}
+          {hidden > 0 && !showAll && (
+            <button type="button" className="underline" onClick={() => loadModels(true)}>
+              Show all
+            </button>
+          )}
         </p>
       )}
+      <Field
+        id={`${id}-backup`}
+        label="Backup model (optional)"
+        error={fields.fallbackModel}
+        hint="Used on the same provider if the main model is overloaded or unavailable, so a busy brand-new model doesn’t stop Hana. Pick an older, steadier one."
+      >
+        <Input
+          id={`${id}-backup`}
+          list={`${id}-models`}
+          value={backup}
+          placeholder="None"
+          onChange={(e) => setBackup(e.target.value)}
+        />
+      </Field>
       {save.isError && Object.keys(fields).length === 0 && (
         <p role="alert" className="text-xs text-danger">
           {errorMessageOf(save.error)}
@@ -348,10 +415,10 @@ function ProviderCard({
       {(result || test.isError) && (
         <p
           role="status"
-          className={`text-sm ${result?.ok ? "text-secondary-text" : "text-danger"}`}
+          className={`text-sm ${result?.ok && result.toolsOk !== false ? "text-secondary-text" : "text-danger"}`}
         >
           {result
-            ? `${result.ok ? "✓" : "✗"} ${result.message}${result.latencyMs ? ` (${result.latencyMs} ms)` : ""}`
+            ? `${result.ok ? (result.toolsOk === false ? "⚠" : "✓") : "✗"} ${result.message}${result.latencyMs ? ` (${(result.latencyMs / 1000).toFixed(1)} s)` : ""}`
             : errorMessageOf(test.error)}
         </p>
       )}

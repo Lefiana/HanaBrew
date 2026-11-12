@@ -10,6 +10,10 @@ export const isCloudProvider = (provider: AiProviderId): boolean => provider !==
 export const CONFIRMATION_POLICIES = ["DESTRUCTIVE_ONLY", "ALL_WRITES"] as const;
 export type ConfirmationPolicy = (typeof CONFIRMATION_POLICIES)[number];
 
+/** QUICK skips Hana's second model call after simple changes (faster); CHATTY always lets her write a follow-up. */
+export const RESPONSE_STYLES = ["QUICK", "CHATTY"] as const;
+export type ResponseStyle = (typeof RESPONSE_STYLES)[number];
+
 /** Presentation states for Hana's companion. A mood is a visual cue only, never a measure of correctness. */
 export const HANA_MOODS = [
   "idle",
@@ -40,6 +44,8 @@ export const providerStatusSchema = z.object({
   /** Last 4 characters of a saved key, so you can tell which key is stored. */
   keyHint: z.string().nullable(),
   model: z.string().nullable(),
+  /** Tried (on the same provider) when the main model is overloaded. */
+  fallbackModel: z.string().nullable(),
   baseUrl: z.string().nullable(),
   cloud: z.boolean(),
   needsKey: z.boolean(),
@@ -53,6 +59,7 @@ export const aiSettingsSchema = z.object({
   fallbackProvider: providerIdSchema.nullable(),
   allowCloudFallback: z.boolean(),
   confirmationPolicy: z.enum(CONFIRMATION_POLICIES),
+  responseStyle: z.enum(RESPONSE_STYLES),
 });
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
 
@@ -70,6 +77,7 @@ export const updateProviderSchema = z
   .strictObject({
     apiKey: z.string().trim().min(8, "That key looks too short.").max(512).optional(),
     model: z.string().trim().min(1).max(120).nullable().optional(),
+    fallbackModel: z.string().trim().min(1).max(120).nullable().optional(),
     baseUrl: z.url().max(300).nullable().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Provide at least one field to update.");
@@ -81,6 +89,7 @@ export const updateAiSettingsSchema = z
     fallbackProvider: providerIdSchema.nullable().optional(),
     allowCloudFallback: z.boolean().optional(),
     confirmationPolicy: z.enum(CONFIRMATION_POLICIES).optional(),
+    responseStyle: z.enum(RESPONSE_STYLES).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Provide at least one field to update.");
 export type UpdateAiSettingsInput = z.input<typeof updateAiSettingsSchema>;
@@ -89,9 +98,16 @@ export const providerTestResultSchema = z.object({
   ok: z.boolean(),
   message: z.string(),
   latencyMs: z.number().int().nullable(),
+  /** Whether the model called a test tool and accepted its result (what Hana needs). Null if it couldn't be checked. */
+  toolsOk: z.boolean().nullable(),
 });
 export type ProviderTestResult = z.infer<typeof providerTestResultSchema>;
-export const providerModelsSchema = z.object({ models: z.array(z.string()) });
+export const providerModelsSchema = z.object({
+  /** Models that can plausibly act as Hana's brain, newest first. */
+  models: z.array(z.string()),
+  /** How many were hidden because they're for images, speech, embeddings and so on. */
+  hidden: z.number().int().nonnegative(),
+});
 
 // ---- chat ----
 export const chatRequestSchema = z.strictObject({
@@ -159,6 +175,9 @@ export type ConversationDetail = z.infer<typeof conversationDetailSchema>;
 export const chatResponseSchema = conversationDetailSchema.extend({
   provider: providerIdSchema.nullable(),
   model: z.string().nullable(),
+  /** How long the whole request took on the server, and how many times the model was called. */
+  latencyMs: z.number().int().nonnegative().nullable(),
+  modelCalls: z.number().int().nonnegative(),
 });
 export type ChatResponse = z.infer<typeof chatResponseSchema>;
 

@@ -1,4 +1,4 @@
-import { ProviderError, redact } from "./errors.js";
+import { ProviderError, excerpt, redact } from "./errors.js";
 import { errorMessageFrom, requestJson } from "./http.js";
 import type {
   AIMessage,
@@ -185,7 +185,12 @@ function mapError(status: number, data: unknown, apiKey: string): ProviderError 
       status,
     );
   if (status >= 500)
-    return new ProviderError("unavailable", "Groq is having trouble right now.", "groq", status);
+    return new ProviderError(
+      "unavailable",
+      `Groq is having trouble right now (HTTP ${status}): ${excerpt(message)}`,
+      "groq",
+      status,
+    );
   if (code === "tool_use_failed") {
     return new ProviderError(
       "bad_request",

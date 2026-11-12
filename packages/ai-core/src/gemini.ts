@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ProviderError, redact } from "./errors.js";
+import { ProviderError, excerpt, redact } from "./errors.js";
 import { errorMessageFrom, requestJson } from "./http.js";
 import { hasParameters } from "./schema.js";
 import type {
@@ -86,6 +86,11 @@ export class GeminiProvider implements AIProvider {
   }
 }
 
+export function isGemini3Plus(model: string): boolean {
+  const major = /gemini-(\d+)/.exec(model)?.[1];
+  return major !== undefined && Number(major) >= 3;
+}
+
 export function buildBody(request: AIRequest): JsonObject {
   const body: JsonObject = {
     systemInstruction: { parts: [{ text: request.system }] },
@@ -103,7 +108,9 @@ export function buildBody(request: AIRequest): JsonObject {
     ];
   }
   const generationConfig: JsonObject = {};
-  if (request.temperature !== undefined) generationConfig.temperature = request.temperature;
+  // Gemini 3 and newer are tuned for their default temperature (lower values can hurt tool use), so only older models get one.
+  if (request.temperature !== undefined && !isGemini3Plus(request.model))
+    generationConfig.temperature = request.temperature;
   if (request.maxOutputTokens !== undefined)
     generationConfig.maxOutputTokens = request.maxOutputTokens;
   if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
@@ -255,14 +262,14 @@ function mapError(status: number, data: unknown, apiKey: string): ProviderError 
   if (status === 429)
     return new ProviderError(
       "rate_limit",
-      "Gemini is rate-limiting requests. Try again shortly.",
+      `Gemini is rate-limiting requests (HTTP ${status}): ${excerpt(message)}`,
       "gemini",
       status,
     );
   if (status >= 500)
     return new ProviderError(
       "unavailable",
-      "Gemini is having trouble right now.",
+      `Gemini is having trouble right now (HTTP ${status}): ${excerpt(message)}`,
       "gemini",
       status,
     );

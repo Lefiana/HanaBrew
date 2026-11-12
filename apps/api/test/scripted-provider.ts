@@ -19,8 +19,10 @@ export class ScriptedProvider implements AIProvider {
     return typeof next === "function" ? next(request) : next;
   }
 
+  models: string[] = ["test-model", "other-model"];
+
   async listModels(): Promise<string[]> {
-    return ["test-model", "other-model"];
+    return this.models;
   }
 
   /** The model answers with plain text. */
@@ -70,6 +72,7 @@ export class ScriptedProvider implements AIProvider {
   reset(): void {
     this.steps.length = 0;
     this.requests.length = 0;
+    this.models = ["test-model", "other-model"];
   }
 
   get remaining(): number {

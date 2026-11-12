@@ -280,6 +280,13 @@ enum AiConfirmationPolicy {
   ALL_WRITES
 }
 
+enum AiResponseStyle {
+  /// After simple changes Hana confirms with the action outcome and skips a second model call (faster).
+  QUICK
+  /// Hana always writes her own follow-up message (slower, friendlier).
+  CHATTY
+}
+
 model AiProviderConfig {
   id              String     @id @default(uuid()) @db.Uuid
   userId          String     @db.Uuid
@@ -289,6 +296,8 @@ model AiProviderConfig {
   /// Last 4 characters of the key, so the user can recognise which key is stored.
   apiKeyHint      String?
   model           String?
+  /// Used for the same provider when `model` is overloaded or unavailable (no privacy change: same provider).
+  fallbackModel   String?
   /// Ollama endpoint override (only honoured when the server allows custom endpoints).
   baseUrl         String?
   createdAt       DateTime   @default(now())
@@ -307,6 +316,7 @@ model AiSettings {
   /// Falling back to a CLOUD provider sends the conversation to a third party, so it is opt-in.
   allowCloudFallback Boolean              @default(false)
   confirmationPolicy AiConfirmationPolicy @default(DESTRUCTIVE_ONLY)
+  responseStyle      AiResponseStyle      @default(QUICK)
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
 

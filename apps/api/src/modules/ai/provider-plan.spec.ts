@@ -9,6 +9,7 @@ const status = (provider: AiProviderId, ready: boolean): ProviderStatus => ({
   hasKey: ready,
   keyHint: null,
   model: ready ? "m" : null,
+  fallbackModel: null,
   baseUrl: null,
   cloud: provider !== "OLLAMA",
   needsKey: provider !== "OLLAMA",
@@ -19,6 +20,7 @@ const settings = (over: Partial<AiSettings> = {}): AiSettings => ({
   fallbackProvider: null,
   allowCloudFallback: false,
   confirmationPolicy: "DESTRUCTIVE_ONLY",
+  responseStyle: "QUICK",
   ...over,
 });
 const all = (ready: Partial<Record<AiProviderId, boolean>>) =>

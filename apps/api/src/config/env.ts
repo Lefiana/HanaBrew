@@ -34,6 +34,10 @@ export const envSchema = z.object({
   AI_ALLOW_CUSTOM_OLLAMA_URL: booleanString.default(false),
   /** Requests per minute (per client IP) for calls that reach the model. */
   AI_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(20),
+  /** How many times a brief provider overload (503/429) is retried before moving on. */
+  AI_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  /** First retry pause in ms (later pauses grow ×3). */
+  AI_RETRY_BASE_MS: z.coerce.number().int().min(0).max(10_000).default(700),
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(90_000),
 });
 

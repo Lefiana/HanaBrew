@@ -33,3 +33,9 @@ export function redact(text: string, secrets: readonly string[] = []): string {
   for (const secret of secrets) if (secret.length >= 6) out = out.split(secret).join("[redacted]");
   return out;
 }
+
+/** A short, safe excerpt of a provider's own error text, for messages shown to the user. */
+export function excerpt(text: string, max = 180): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}

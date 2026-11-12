@@ -1,10 +1,16 @@
 import { ConflictException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
-import { ProviderError, buildSystemPrompt, type AIResponse } from "@hanabrew/ai-core";
+import {
+  ProviderError,
+  buildSystemPrompt,
+  retryTransient,
+  type AIResponse,
+} from "@hanabrew/ai-core";
 import type {
   AiProviderId,
   ChatResponse,
   ConfirmationPolicy,
   RecentAction,
+  ResponseStyle,
 } from "@hanabrew/contracts";
 import { Prisma } from "@hanabrew/database";
 import { todayInZone } from "../../common/dates.js";
@@ -14,9 +20,11 @@ import { SettingsService } from "../settings/settings.service.js";
 import { TasksService } from "../tasks/tasks.service.js";
 import { AiConversationsService, type AiContext } from "./ai-conversations.service.js";
 import { AiProvidersService } from "./ai-providers.service.js";
+import { AiSettingsService } from "./ai-settings.service.js";
 import { requiresConfirmation } from "./confirmation.js";
 import { friendlyMessage, toHttpError } from "./provider-errors.js";
 import type { ProviderPlan } from "./provider-plan.js";
+import { composeQuickReply } from "./quick-reply.js";
 import { toToolError, type AiTool, type ToolContext } from "./tools/tool.js";
 import { AiToolsService } from "./tools/tools.service.js";
 
@@ -24,21 +32,31 @@ import { AiToolsService } from "./tools/tools.service.js";
 export const MAX_STEPS = 6;
 export const APPROVAL_TTL_MS = 15 * 60_000;
 const MAX_RESULT_CHARS = 8_000;
+/** Generous: thinking models spend part of this budget on reasoning before they answer. */
+const MAX_OUTPUT_TOKENS = 4096;
 
 interface RunOptions {
   timeZone: string;
   plan: ProviderPlan & { primary: AiProviderId };
   policy: ConfirmationPolicy;
+  style: ResponseStyle;
   /** Set on a fresh user message: if the very first model call fails, undo it so the user can simply retry. */
   rollback?: { userMessageId: string; deleteConversation: boolean };
 }
 interface RunInfo {
   provider: AiProviderId | null;
   model: string | null;
+  modelCalls: number;
+}
+interface BatchResult {
+  pending: number;
+  /** True when every call was a change that ran successfully (nothing to read back, nothing failed, nothing waiting). */
+  simpleWritesOnly: boolean;
 }
 
 const RISK = { read: "READ", write: "WRITE", destructive: "DESTRUCTIVE" } as const;
 const json = (value: unknown) => value as Prisma.InputJsonValue;
+const newInfo = (): RunInfo => ({ provider: null, model: null, modelCalls: 0 });
 
 /** Keeps what goes back to the model small; oversize results are replaced by a hint to narrow the request. */
 function limitResult(data: unknown): unknown {
@@ -58,6 +76,7 @@ export class AiService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly providers: AiProvidersService,
+    private readonly aiSettings: AiSettingsService,
     private readonly conversations: AiConversationsService,
     private readonly tools: AiToolsService,
     private readonly tasks: TasksService,
@@ -78,8 +97,9 @@ export class AiService {
       timeZone?: string | undefined;
     },
   ): Promise<ChatResponse> {
+    const startedAt = Date.now();
     const timeZone = await this.userSettings.resolveTimeZone(ctx.userId, request.timeZone);
-    const { plan, confirmationPolicy } = await this.providers.planFor(ctx.userId); // 422 before anything is written
+    const { plan, confirmationPolicy, responseStyle } = await this.providers.planFor(ctx.userId); // 422 before anything is written
     if (request.conversationId) await this.conversations.getOwned(ctx, request.conversationId);
 
     const lockKey = request.conversationId ?? `new:${ctx.userId}`;
@@ -101,9 +121,10 @@ export class AiService {
         timeZone,
         plan,
         policy: confirmationPolicy,
+        style: responseStyle,
         rollback: { userMessageId: userMessage.id, deleteConversation: isNew },
       });
-      return this.respond(ctx, conversationId, info);
+      return this.respond(ctx, conversationId, info, startedAt);
     });
   }
 
@@ -121,6 +142,7 @@ export class AiService {
     actionId: string,
     decision: "approve" | "reject",
   ): Promise<ChatResponse> {
+    const startedAt = Date.now();
     const found = await this.db.aiToolAction.findFirst({
       where: { id: actionId, workspaceId: ctx.workspaceId, userId: ctx.userId },
     });
@@ -154,31 +176,40 @@ export class AiService {
         });
       } else {
         const tool = this.tools.get(action.toolName);
-        if (!tool) {
+        if (!tool)
           await this.finishAction(conversationId, action, "FAILED", {
             ok: false,
             error: "That tool no longer exists.",
           });
-        } else {
+        else
           await this.runAction(conversationId, action, tool, {
             workspaceId: ctx.workspaceId,
             userId: ctx.userId,
             timeZone,
             now: new Date(),
           });
-        }
       }
 
-      const info: RunInfo = { provider: null, model: null };
+      const info = newInfo();
       const stillWaiting = await this.db.aiToolAction.count({
         where: { conversationId, status: "PENDING" },
       });
       if (stillWaiting === 0) {
+        const style = (await this.aiSettings.get(ctx.userId)).responseStyle;
+        if (style === "QUICK" && (await this.finishQuickly(conversationId)))
+          return this.respond(ctx, conversationId, info, startedAt);
         try {
-          const { plan, confirmationPolicy } = await this.providers.planFor(ctx.userId);
+          const { plan, confirmationPolicy, responseStyle } = await this.providers.planFor(
+            ctx.userId,
+          );
           Object.assign(
             info,
-            await this.runTurn(ctx, conversationId, { timeZone, plan, policy: confirmationPolicy }),
+            await this.runTurn(ctx, conversationId, {
+              timeZone,
+              plan,
+              policy: confirmationPolicy,
+              style: responseStyle,
+            }),
           );
         } catch (error) {
           // The action itself is done; only the follow-up message failed.
@@ -188,8 +219,38 @@ export class AiService {
           });
         }
       }
-      return this.respond(ctx, conversationId, info);
+      return this.respond(ctx, conversationId, info, startedAt);
     });
+  }
+
+  /** After approvals, if everything resolved cleanly (changes done or declined, nothing to read back), confirm without a model call. */
+  private async finishQuickly(conversationId: string): Promise<boolean> {
+    const last = await this.db.aiMessage.findFirst({
+      where: { conversationId, role: "ASSISTANT", NOT: { toolCalls: { equals: Prisma.DbNull } } },
+      orderBy: { seq: "desc" },
+    });
+    const calls = Array.isArray(last?.toolCalls) ? (last.toolCalls as Array<{ id: string }>) : [];
+    if (!last || calls.length === 0) return false;
+    const actions = await this.db.aiToolAction.findMany({
+      where: { conversationId, toolCallId: { in: calls.map((c) => c.id) } },
+    });
+    const clean =
+      actions.length === calls.length &&
+      actions.every(
+        (a) => a.risk !== "READ" && (a.status === "EXECUTED" || a.status === "REJECTED"),
+      );
+    if (!clean) return false;
+    await this.conversations.append(conversationId, {
+      role: "ASSISTANT",
+      content: composeQuickReply(
+        actions.map((a) => ({
+          status: a.status as "EXECUTED" | "REJECTED",
+          outcome: outcomeText(a.result),
+          summary: a.summary,
+        })),
+      ),
+    });
+    return true;
   }
 
   // -------------------------------------------------------------------------------- the model loop
@@ -198,22 +259,21 @@ export class AiService {
     conversationId: string,
     options: RunOptions,
   ): Promise<RunInfo> {
-    const info: RunInfo = { provider: null, model: null };
+    const info = newInfo();
     const toolContext = (): ToolContext => ({
       workspaceId: ctx.workspaceId,
       userId: ctx.userId,
       timeZone: options.timeZone,
       now: new Date(),
     });
-    let modelCalls = 0;
 
     for (let step = 0; step < MAX_STEPS; step++) {
       let outcome: { response: AIResponse; provider: AiProviderId; model: string };
       try {
         outcome = await this.callModel(ctx, conversationId, options);
-        modelCalls += 1;
+        info.modelCalls += 1;
       } catch (error) {
-        if (modelCalls === 0 && options.rollback) {
+        if (info.modelCalls === 0 && options.rollback) {
           await this.conversations.rollback(
             conversationId,
             options.rollback.userMessageId,
@@ -224,7 +284,7 @@ export class AiService {
         // Something already happened this turn (actions ran), so keep the transcript and explain.
         await this.conversations.append(conversationId, {
           role: "ASSISTANT",
-          content: `I got interrupted: ${friendlyMessage(error)}`,
+          content: `I got interrupted: ${friendlyMessage(error)}\nIf this keeps happening, try a different model or set a backup model in Settings → Hana's AI.`,
         });
         return info;
       }
@@ -245,7 +305,7 @@ export class AiService {
       });
       if (!toolCalls.length) return info;
 
-      const pending = await this.handleToolCalls(
+      const batch = await this.handleToolCalls(
         ctx,
         conversationId,
         toolCalls,
@@ -253,7 +313,13 @@ export class AiService {
         options.policy,
         { provider, model },
       );
-      if (pending > 0) return info; // wait for the user's approval
+      if (batch.pending > 0) return info; // wait for the user's approval
+
+      if (options.style === "QUICK" && batch.simpleWritesOnly) {
+        // Nothing to read back and nothing went wrong: confirm from the recorded outcomes instead of paying for another model call.
+        await this.finishQuickly(conversationId);
+        return info;
+      }
     }
 
     await this.conversations.append(conversationId, {
@@ -264,6 +330,11 @@ export class AiService {
     return info;
   }
 
+  /**
+   * Tries, in order: the main model; a backup model on the SAME provider (no privacy change); then the user's
+   * fallback provider, which `plan` only contains when their privacy settings allow it. Brief overloads
+   * (503/429) are retried with a short pause before moving on.
+   */
   private async callModel(ctx: AiContext, conversationId: string, options: RunOptions) {
     const now = new Date();
     const today = todayInZone(options.timeZone, now);
@@ -276,31 +347,43 @@ export class AiService {
       overview,
     });
     const messages = await this.conversations.history(conversationId);
-    const candidates = [options.plan.primary, options.plan.fallback].filter(
-      (p): p is AiProviderId => p !== null,
-    );
+
+    const primary = await this.providers.build(ctx.userId, options.plan.primary);
+    const attempts: Array<() => ReturnType<AiProvidersService["build"]>> = [
+      () => Promise.resolve(primary),
+    ];
+    if (primary.backupModel && primary.backupModel !== primary.model) {
+      attempts.push(() =>
+        this.providers.build(ctx.userId, primary.provider, { model: primary.backupModel! }),
+      );
+    }
+    if (options.plan.fallback)
+      attempts.push(() => this.providers.build(ctx.userId, options.plan.fallback!));
 
     let lastError: unknown;
-    for (const [index, candidate] of candidates.entries()) {
+    for (const [index, makeAttempt] of attempts.entries()) {
+      const built = await makeAttempt();
       try {
-        const built = await this.providers.build(ctx.userId, candidate);
-        const response = await built.adapter.generateResponse({
-          model: built.model,
-          system,
-          messages,
-          tools: this.tools.definitions(),
-          temperature: 0.3,
-          maxOutputTokens: 1024,
-        });
+        const response = await retryTransient(
+          () =>
+            built.adapter.generateResponse({
+              model: built.model,
+              system,
+              messages,
+              tools: this.tools.definitions(),
+              temperature: 0.3,
+              maxOutputTokens: MAX_OUTPUT_TOKENS,
+            }),
+          { retries: this.env.AI_RETRIES, baseMs: this.env.AI_RETRY_BASE_MS },
+        );
         return { response, provider: built.provider, model: built.model };
       } catch (error) {
         lastError = error;
-        // Only a provider that is down or busy may be replaced, and `candidates` already contains only providers the user's privacy settings allow.
-        const canFallBack =
-          error instanceof ProviderError && error.fallbackEligible && index < candidates.length - 1;
-        if (!canFallBack) throw error;
+        const canTryNext =
+          error instanceof ProviderError && error.fallbackEligible && index < attempts.length - 1;
+        if (!canTryNext) throw error;
         this.logger.warn(
-          `Provider ${candidate} failed (${(error as ProviderError).kind}); trying ${candidates[index + 1]}`,
+          `${built.provider}/${built.model} failed (${(error as ProviderError).kind}); trying the next option`,
         );
       }
     }
@@ -315,8 +398,9 @@ export class AiService {
     toolContext: ToolContext,
     policy: ConfirmationPolicy,
     used: { provider: AiProviderId; model: string },
-  ): Promise<number> {
+  ): Promise<BatchResult> {
     let pending = 0;
+    let simpleWritesOnly = true;
     for (const call of calls) {
       const tool = this.tools.get(call.name);
       const base = {
@@ -330,6 +414,7 @@ export class AiService {
       };
 
       const reject = async (reason: string) => {
+        simpleWritesOnly = false;
         const action = await this.db.aiToolAction.create({
           data: {
             ...base,
@@ -380,11 +465,13 @@ export class AiService {
       });
       if (needsApproval) {
         pending += 1;
+        simpleWritesOnly = false;
         continue;
       }
-      await this.runAction(conversationId, action, tool, toolContext);
+      const status = await this.runAction(conversationId, action, tool, toolContext);
+      if (status !== "EXECUTED" || tool.risk === "read") simpleWritesOnly = false;
     }
-    return pending;
+    return { pending, simpleWritesOnly };
   }
 
   /** Executes an already-claimed (RUNNING) action and records the outcome in the audit row and the transcript. */
@@ -393,7 +480,7 @@ export class AiService {
     action: { id: string; toolCallId: string; toolName: string; args: unknown },
     tool: AiTool,
     toolContext: ToolContext,
-  ): Promise<void> {
+  ): Promise<"EXECUTED" | "FAILED"> {
     let status: "EXECUTED" | "FAILED" = "EXECUTED";
     let result: { ok: boolean; outcome?: string; data?: unknown; error?: string };
     try {
@@ -410,6 +497,7 @@ export class AiService {
       result = { ok: false, error: expected?.message ?? "Something went wrong while doing that." };
     }
     await this.finishAction(conversationId, action, status, result);
+    return status;
   }
 
   private async finishAction(
@@ -430,11 +518,14 @@ export class AiService {
     ctx: AiContext,
     conversationId: string,
     info: RunInfo,
+    startedAt: number,
   ): Promise<ChatResponse> {
     return {
       ...(await this.conversations.detail(ctx, conversationId)),
       provider: info.provider,
       model: info.model,
+      latencyMs: Date.now() - startedAt,
+      modelCalls: info.modelCalls,
     };
   }
 
@@ -454,6 +545,11 @@ export class AiService {
       resolvedAt: r.resolvedAt ? r.resolvedAt.toISOString() : null,
     }));
   }
+}
+
+function outcomeText(result: unknown): string | null {
+  const r = result as { ok?: boolean; outcome?: string } | null;
+  return r?.ok && r.outcome ? r.outcome : null;
 }
 
 function emptyReply(finish: AIResponse["finishReason"]): string {

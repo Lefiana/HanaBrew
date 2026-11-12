@@ -281,6 +281,48 @@ describe("Gemini errors", () => {
   });
 });
 
+describe("Gemini error detail and sampling", () => {
+  const ask = (model = "m") =>
+    provider.generateResponse({
+      model,
+      system: "s",
+      messages: [{ role: "user", content: "x" }],
+      temperature: 0.3,
+    });
+
+  it("keeps the provider's own explanation for overloads, so the real reason is visible", async () => {
+    server.respond(503, {
+      error: {
+        code: 503,
+        message: "The model is overloaded. Please try again later.",
+        status: "UNAVAILABLE",
+      },
+    });
+    const error = (await ask().catch((e: unknown) => e)) as ProviderError;
+    expect(error.kind).toBe("unavailable");
+    expect(error.message).toMatch(/HTTP 503/);
+    expect(error.message).toMatch(/model is overloaded/);
+  });
+
+  it("keeps the explanation for rate limits too", async () => {
+    server.respond(429, { error: { message: "Resource has been exhausted (e.g. check quota)." } });
+    expect(((await ask().catch((e: unknown) => e)) as ProviderError).message).toMatch(
+      /HTTP 429.*quota/,
+    );
+  });
+
+  it("omits temperature for Gemini 3+ models and keeps it for older ones", async () => {
+    server.respond(200, textResponse("ok"));
+    await ask("gemini-3.8-flash");
+    await ask("gemini-2.5-flash");
+    const [three, two] = server.requests.map(
+      (r) => (r.body as { generationConfig?: { temperature?: number } }).generationConfig,
+    );
+    expect(three?.temperature).toBeUndefined();
+    expect(two?.temperature).toBe(0.3);
+  });
+});
+
 describe("Gemini listModels", () => {
   it("returns only models that can generate content, without the 'models/' prefix", async () => {
     server.respond(200, {

@@ -35,6 +35,8 @@ async function aiUser(prefix = "ai"): Promise<Client> {
   );
   const res = await c.put("/api/ai/providers/ollama", { model: "test-model" });
   expect(res.status, JSON.stringify(res.body)).toBe(200);
+  // These tests assert on the model's follow-up messages, so they use "Hana explains"; QUICK mode has its own tests below.
+  await c.patch("/api/ai/settings", { responseStyle: "CHATTY" });
   return c;
 }
 const chat = (c: Client, message: string, extra: Record<string, unknown> = {}) =>
@@ -137,24 +139,93 @@ describe("access and setup", () => {
     expect(removed.body).toMatchObject({ hasKey: false, keyHint: null, ready: false });
   });
 
-  it("tests a connection and lists models through the provider", async () => {
+  it("tests the connection AND tool calling, including sending a tool result back", async () => {
     const c = await aiUser();
-    ollama.say("OK");
+    ollama
+      .say("OK")
+      .call([{ name: "ping", args: { value: "ok" } }])
+      .say("Got it.");
     const test = await c.post("/api/ai/providers/ollama/test");
-    expect(test.body).toMatchObject({ ok: true, message: expect.stringContaining("test-model") });
+    expect(test.body).toMatchObject({
+      ok: true,
+      toolsOk: true,
+      message: expect.stringContaining("tool calling works"),
+    });
+    expect(ollama.requests).toHaveLength(3);
+    expect(ollama.requests[1]!.tools![0]!.name).toBe("ping");
+    expect(ollama.requests[2]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool"]); // the result really is sent back
+  });
+
+  it("says plainly when the model connects but can't use tools", async () => {
+    const c = await aiUser();
+    ollama.say("OK").say("I'd rather just chat."); // never calls the tool
+    expect((await c.post("/api/ai/providers/ollama/test")).body).toMatchObject({
+      ok: true,
+      toolsOk: false,
+      message: expect.stringMatching(/without using the test tool/),
+    });
+
+    ollama.reset();
+    ollama
+      .say("OK")
+      .fail(
+        new ProviderError(
+          "unsupported_tools",
+          "The model “x” doesn't support tools.",
+          "ollama",
+          400,
+        ),
+      );
+    expect((await c.post("/api/ai/providers/ollama/test")).body).toMatchObject({
+      ok: true,
+      toolsOk: false,
+      message: expect.stringMatching(/can't be used with tools/),
+    });
+
+    ollama.reset();
+    ollama
+      .say("OK")
+      .call([{ name: "ping", args: { value: "ok" } }])
+      .fail(
+        new ProviderError(
+          "bad_request",
+          "Function call is missing a thought_signature",
+          "gemini",
+          400,
+        ),
+      );
+    const replay = (await c.post("/api/ai/providers/ollama/test")).body;
+    expect(replay).toMatchObject({ ok: true, toolsOk: false });
+    expect(replay.message).toMatch(/sending the result back failed.*thought_signature/);
+  });
+
+  it("reports a failed connection with the provider's real reason", async () => {
+    const c = await aiUser();
     ollama.fail(
       new ProviderError(
         "unavailable",
-        "Can't reach localhost:11434. Is it running and reachable?",
-        "ollama",
+        "Gemini is having trouble right now (HTTP 503): The model is overloaded.",
+        "gemini",
+        503,
       ),
     );
     expect((await c.post("/api/ai/providers/ollama/test")).body).toMatchObject({
       ok: false,
-      message: expect.stringMatching(/Can't reach/),
+      toolsOk: null,
+      message: expect.stringMatching(/HTTP 503.*overloaded/),
     });
+  });
+
+  it("lists models newest first and hides ones that can't chat (images, speech, embeddings), unless asked", async () => {
+    const c = await aiUser();
+    ollama.models = ["nomic-embed-text", "llama3:8b", "qwen3:7b", "llama3.1:8b"];
     expect((await c.get("/api/ai/providers/ollama/models")).body).toEqual({
-      models: ["test-model", "other-model"],
+      models: ["llama3.1:8b", "llama3:8b", "qwen3:7b"],
+      hidden: 1,
+    });
+    expect((await c.get("/api/ai/providers/ollama/models?all=true")).body).toMatchObject({
+      hidden: 0,
+      models: expect.arrayContaining(["nomic-embed-text"]),
     });
   });
 });
@@ -865,5 +936,183 @@ describe("deleting conversations keeps an audit trail without the content", () =
       status: "EXECUTED",
     });
     expect(await tasksOf(c)).toHaveLength(1); // the task the AI created is the user's own data and stays
+  });
+});
+
+describe("quick confirmations (the faster default)", () => {
+  const quick = async (prefix = "ai_quick") => {
+    const c = await aiUser(prefix);
+    await c.patch("/api/ai/settings", { responseStyle: "QUICK" });
+    return c;
+  };
+
+  it("after a simple change Hana confirms from the recorded outcome with ONE model call", async () => {
+    const c = await quick();
+    ollama.call([
+      { name: "create_task", args: { title: "Go for a run (6:00 am)", dueDate: "2030-01-05" } },
+    ]);
+    const res = await chat(c, "add a run tomorrow at 6 am");
+    expect(ollama.requests).toHaveLength(1); // no second call
+    expect(res.body.modelCalls).toBe(1);
+    expect(items(res).at(-1)).toMatchObject({
+      type: "assistant",
+      content: "Done ✓\n• Created task “Go for a run (6:00 am)”",
+    });
+    expect(await tasksOf(c)).toHaveLength(1);
+    expect(res.body.hana.mood).toBe("happy");
+  });
+
+  it("several changes in one go are confirmed together", async () => {
+    const c = await quick();
+    ollama.call([
+      { name: "create_task", args: { title: "A" } },
+      { name: "create_task", args: { title: "B" } },
+    ]);
+    const res = await chat(c, "add A and B");
+    expect(ollama.requests).toHaveLength(1);
+    expect(items(res).at(-1).content).toBe("Done ✓\n• Created task “A”\n• Created task “B”");
+  });
+
+  it("still asks the model when it needs to READ something back, or when something went wrong", async () => {
+    const c = await quick();
+    await makeTask(c, { title: "milk run" });
+    ollama.call([{ name: "search_tasks", args: { query: "milk" } }]).say("One task about milk.");
+    await chat(c, "milk?");
+    expect(ollama.requests).toHaveLength(2);
+
+    ollama.reset();
+    ollama
+      .call([{ name: "create_task", args: {} }])
+      .call([{ name: "create_task", args: { title: "Fixed" } }]);
+    const res = await chat(c, "add something");
+    expect(actionsOf(res).map((a) => a.status)).toEqual(["FAILED", "EXECUTED"]); // the failure went back to the model, which corrected itself
+    expect(ollama.requests).toHaveLength(2);
+    expect(items(res).at(-1).content).toBe("Done ✓\n• Created task “Fixed”");
+  });
+
+  it("approving or declining also finishes without another model call", async () => {
+    const c = await quick();
+    const task = await makeTask(c, { title: "Old chore" });
+    ollama.call([{ name: "delete_task", args: { taskId: task.id } }]);
+    const pending = pendingOf(await chat(c, "delete old chore"));
+    const approved = await c.post(`/api/ai/actions/${pending.id}/approve`);
+    expect(ollama.requests).toHaveLength(1);
+    expect(items(approved).at(-1).content).toBe("Done ✓\n• Deleted task “Old chore”");
+    expect(approved.body.modelCalls).toBe(0);
+
+    ollama.reset();
+    const other = await makeTask(c, { title: "Keep me" });
+    ollama.call([{ name: "delete_task", args: { taskId: other.id } }]);
+    const second = pendingOf(await chat(c, "delete keep me"));
+    const declined = await c.post(`/api/ai/actions/${second.id}/reject`);
+    expect(items(declined).at(-1).content).toBe("Okay, I didn't change anything.");
+    expect(ollama.requests).toHaveLength(1);
+    expect((await tasksOf(c)).map((t) => t.title)).toEqual(["Keep me"]);
+  });
+
+  it("'Hana explains' mode keeps the second call, and the style is a saved setting", async () => {
+    const c = await aiUser("ai_chatty");
+    expect((await c.get("/api/ai/overview")).body.settings.responseStyle).toBe("CHATTY");
+    ollama.call([{ name: "create_task", args: { title: "x" } }]).say("Added, enjoy!");
+    const res = await chat(c, "add x");
+    expect(ollama.requests).toHaveLength(2);
+    expect(items(res).at(-1).content).toBe("Added, enjoy!");
+    expect((await c.patch("/api/ai/settings", { responseStyle: "FAST" })).status).toBe(400);
+  });
+
+  it("reports how long it took and how many model calls it needed", async () => {
+    const c = await aiUser("ai_timing");
+    ollama.say("Hello");
+    const res = await chat(c, "hi");
+    expect(res.body.modelCalls).toBe(1);
+    expect(typeof res.body.latencyMs).toBe("number");
+    expect(res.body.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("backup model and honest errors", () => {
+  const overloaded = (model: string) =>
+    new ProviderError(
+      "unavailable",
+      `Gemini is having trouble right now (HTTP 503): The model ${model} is overloaded. Please try again later.`,
+      "gemini",
+      503,
+    );
+  const geminiUser = async () => {
+    const c = await aiUser("ai_backup");
+    await c.put("/api/ai/providers/gemini", {
+      apiKey: "AIzaSy-backup-key-4444",
+      model: "gemini-new",
+      fallbackModel: "gemini-stable",
+    });
+    await c.patch("/api/ai/settings", { preferredProvider: "GEMINI" });
+    return c;
+  };
+
+  it("switches to the backup model on the same provider when the main model is overloaded, with no privacy consent needed", async () => {
+    const c = await geminiUser();
+    expect((await c.get("/api/ai/overview")).body.providers[0]).toMatchObject({
+      model: "gemini-new",
+      fallbackModel: "gemini-stable",
+    });
+    gemini.fail(overloaded("gemini-new")).say("Answered by the backup.");
+    const res = await chat(c, "hello");
+    expect(res.status).toBe(200);
+    expect(gemini.requests.map((r) => r.model)).toEqual(["gemini-new", "gemini-stable"]);
+    expect(res.body).toMatchObject({ provider: "GEMINI", model: "gemini-stable" });
+    expect(ollama.requests).toHaveLength(0); // never left Gemini
+  });
+
+  it("shows the provider's real explanation when every option fails (not a vague message)", async () => {
+    const c = await geminiUser();
+    gemini.fail(overloaded("gemini-new")).fail(overloaded("gemini-stable"));
+    const res = await chat(c, "hello");
+    expect(res.status).toBe(424);
+    expect(res.body.message).toMatch(/HTTP 503.*overloaded/);
+    expect((await c.get("/api/ai/conversations")).body).toEqual([]); // and nothing is kept, so retrying is clean
+  });
+
+  it("explains an interruption after an action already ran, and suggests a backup model", async () => {
+    const c = await geminiUser();
+    await c.patch("/api/ai/settings", { responseStyle: "CHATTY" });
+    gemini
+      .call([{ name: "create_task", args: { title: "Half done" } }])
+      .fail(overloaded("gemini-new"))
+      .fail(overloaded("gemini-stable"));
+    const res = await chat(c, "add it");
+    expect(res.status).toBe(200);
+    expect(items(res).at(-1).content).toMatch(/interrupted.*HTTP 503.*backup model/s);
+    expect(await tasksOf(c)).toHaveLength(1);
+  });
+
+  it("a bad key is not retried or swapped for the backup (that would just fail again)", async () => {
+    const c = await geminiUser();
+    gemini
+      .fail(
+        new ProviderError(
+          "auth",
+          "Gemini rejected the API key. Check it in Settings.",
+          "gemini",
+          401,
+        ),
+      )
+      .say("never used");
+    expect((await chat(c, "hello")).status).toBe(422);
+    expect(gemini.requests).toHaveLength(1);
+  });
+
+  it("tells the model that tasks have no time of day (the 'set for 6 am' mistake)", async () => {
+    const c = await aiUser("ai_time");
+    ollama
+      .call([
+        { name: "create_task", args: { title: "Go for a run (6:00 am)", dueDate: "2030-01-05" } },
+      ])
+      .say("Added.");
+    await chat(c, "run at 6 am tomorrow");
+    expect(ollama.requests[0]!.system).toMatch(/no time of day on a task/);
+    expect(ollama.requests[0]!.tools!.find((t) => t.name === "create_task")!.description).toMatch(
+      /no time of day/,
+    );
+    expect(ollama.lastToolResults()[0]!.content.data.note).toMatch(/not a time of day/);
   });
 });

@@ -37,3 +37,10 @@ Then add it to the provider enum (`contracts`, Prisma), `provider-factory.ts` an
 | "Can't reach localhost:11434"                | Ollama isn't running, or from Docker use `host.docker.internal` (`DOCKER_OLLAMA_BASE_URL`)                        |
 | "The model … doesn't support tools" (Ollama) | Pick a tool-capable model                                                                                         |
 | Groq: "invalid tool call"                    | The model produced malformed arguments; retry or choose a model with better tool support                          |
+
+## Which model, and does memory (M4) make Hana faster?
+
+- **Speed is mostly the model.** Smaller/faster models (`flash`, `lite`) answer sooner; larger (`pro`) are smarter but slower; models that "think" before answering add seconds. Quick confirmation removes one of Hana's two AI calls for simple changes.
+- **Quality of answers** comes from the model plus the information it is given. M4 (journal and semantic memory) improves _relevance and personalization_
+  (she can recall notes and preferences), not speed. It adds a retrieval step, so it can only make replies a little slower.
+- Compatibility: a model must support tool calls. **Settings → Test connection** checks this for the exact model you pick.

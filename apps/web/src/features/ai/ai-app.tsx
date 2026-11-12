@@ -29,6 +29,11 @@ export function AiApp() {
   const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asleep, setAsleep] = useState(false);
+  const [lastRun, setLastRun] = useState<{
+    model: string | null;
+    latencyMs: number | null;
+    modelCalls: number;
+  } | null>(null);
   const detail = useConversation(conversationId);
   const bottom = useRef<HTMLDivElement>(null);
   const sleepTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -70,6 +75,11 @@ export function AiApp() {
     try {
       const response = await send.mutateAsync({ message, conversationId, timeZone });
       setConversationId(response.id);
+      setLastRun({
+        model: response.model,
+        latencyMs: response.latencyMs,
+        modelCalls: response.modelCalls,
+      });
     } catch (e) {
       setDraft(message); // nothing was kept on the server, so let them retry with one click
       setError(errorMessageOf(e));
@@ -81,7 +91,12 @@ export function AiApp() {
   async function onDecide(id: string, decision: "approve" | "reject") {
     setError(null);
     try {
-      await decide.mutateAsync({ id, decision });
+      const response = await decide.mutateAsync({ id, decision });
+      setLastRun({
+        model: response.model,
+        latencyMs: response.latencyMs,
+        modelCalls: response.modelCalls,
+      });
     } catch (e) {
       setError(errorMessageOf(e));
     }
@@ -195,6 +210,15 @@ export function AiApp() {
       </div>
 
       <div className="border-t border-border p-3">
+        {lastRun && !sending && (
+          <p className="mb-1.5 text-[11px] text-muted" aria-label="Last response timing">
+            {lastRun.model ? `${lastRun.model} · ` : ""}
+            {lastRun.latencyMs !== null ? `${(lastRun.latencyMs / 1000).toFixed(1)} s` : ""} ·{" "}
+            {lastRun.modelCalls === 0
+              ? "no AI call needed"
+              : `${lastRun.modelCalls} AI call${lastRun.modelCalls === 1 ? "" : "s"}`}
+          </p>
+        )}
         {suggestions.length > 0 && ready && !pendingCount && (
           <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="Suggestions">
             {suggestions.map((s) => (

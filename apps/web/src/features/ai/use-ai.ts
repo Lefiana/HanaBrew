@@ -109,8 +109,11 @@ export function useProviderMutations() {
         apiSend("POST", `/api/ai/providers/${lower(provider)}/test`, providerTestResultSchema),
     }),
     models: useMutation({
-      mutationFn: (provider: AiProviderId) =>
-        apiFetch(`/api/ai/providers/${lower(provider)}/models`, providerModelsSchema),
+      mutationFn: ({ provider, all }: { provider: AiProviderId; all?: boolean }) =>
+        apiFetch(
+          `/api/ai/providers/${lower(provider)}/models${all ? "?all=true" : ""}`,
+          providerModelsSchema,
+        ),
     }),
     settings: useMutation({
       mutationFn: (input: UpdateAiSettingsInput) =>

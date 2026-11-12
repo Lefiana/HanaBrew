@@ -14,3 +14,4 @@ process.env.AI_RATE_LIMIT_PER_MINUTE = "10000";
 process.env.AI_ALLOW_CUSTOM_OLLAMA_URL = "false";
 delete process.env.GEMINI_API_KEY;
 delete process.env.GROQ_API_KEY;
+process.env.AI_RETRIES = "0";

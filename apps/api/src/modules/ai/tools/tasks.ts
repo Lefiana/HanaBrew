@@ -104,7 +104,8 @@ export function taskTools(tasks: TasksService, projects: ProjectsService) {
 
     defineTool({
       name: "create_task",
-      description: "Create a task. Only the title is required.",
+      description:
+        'Create a task. Only the title is required. Tasks have a due DATE but no time of day: if the user gives a time (like 6 am), put it in the title, e.g. "Go for a run (6:00 am)".',
       risk: "write",
       input: z.object({
         title: z.string().min(1).max(200),
@@ -128,7 +129,13 @@ export function taskTools(tasks: TasksService, projects: ProjectsService) {
       async execute(a, ctx) {
         if (a.dueDate) assertDate(a.dueDate, "dueDate");
         const created = await tasks.create(ctx.workspaceId, createTaskSchema.parse({ ...a }));
-        return { data: { created: brief(created) }, outcome: `Created task “${created.title}”` };
+        return {
+          data: {
+            created: brief(created),
+            note: "Tasks store a due date only, not a time of day.",
+          },
+          outcome: `Created task “${created.title}”`,
+        };
       },
       targetId: () => undefined,
     }),

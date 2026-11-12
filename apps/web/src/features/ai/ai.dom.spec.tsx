@@ -19,6 +19,7 @@ const providerStatus = (
   hasKey: false,
   keyHint: null,
   model: null,
+  fallbackModel: null,
   baseUrl: provider === "OLLAMA" ? "http://localhost:11434" : null,
   cloud: provider !== "OLLAMA",
   needsKey: provider !== "OLLAMA",
@@ -32,6 +33,7 @@ const overview = (over: Partial<AiOverview> = {}): AiOverview => ({
     fallbackProvider: null,
     allowCloudFallback: false,
     confirmationPolicy: "DESTRUCTIVE_ONLY",
+    responseStyle: "QUICK",
   },
   keyStorageAvailable: true,
   activeProvider: null,
@@ -75,6 +77,8 @@ const conversation = (items: ChatItem[], over: Partial<ChatResponse> = {}): Chat
   hana: { message: "", mood: "idle", suggestions: [] },
   provider: "OLLAMA",
   model: "llama",
+  latencyMs: 1200,
+  modelCalls: 1,
   ...over,
 });
 
@@ -157,6 +161,62 @@ describe("HanaAI chat", () => {
     expect(db.writes[0]!.body).not.toHaveProperty("conversationId"); // a new chat
     expect(box).toHaveValue("");
     expect(await screen.findByRole("button", { name: "Plan my week" })).toBeInTheDocument(); // suggestion chip from Hana
+  });
+
+  it("shows which model answered, how long it took, and how many AI calls it needed", async () => {
+    const reply = conversation([user("hi"), hana("Hello")], {
+      model: "gemini-3.5-flash",
+      latencyMs: 2300,
+      modelCalls: 2,
+    });
+    withAi(
+      backend({
+        chat: () => ({ status: 200, body: reply }),
+        extra: () => ({ status: 200, body: reply }),
+      }),
+    );
+    const u = userEvent.setup();
+    renderWithQuery(<AiApp />);
+    const box = await screen.findByLabelText("Message Hana");
+    await waitFor(() => expect(box).toBeEnabled());
+    await u.type(box, "hi{Enter}");
+    expect(await screen.findByLabelText("Last response timing")).toHaveTextContent(
+      "gemini-3.5-flash · 2.3 s · 2 AI calls",
+    );
+  });
+
+  it("says when no AI call was needed (a quick confirmation after approving)", async () => {
+    const pending = action({
+      status: "PENDING",
+      summary: "Create task “X”",
+      outcome: null,
+      expiresAt: "2026-11-02T00:15:00.000Z",
+    });
+    const asked = conversation([user("add x"), pending], { model: "llama" });
+    const done = conversation(
+      [
+        user("add x"),
+        { ...(pending as object), status: "EXECUTED", outcome: "Created task “X”" } as ChatItem,
+        hana("Done ✓\n• Created task “X”"),
+      ],
+      { model: null, modelCalls: 0, latencyMs: 90 },
+    );
+    withAi(
+      backend({
+        chat: () => ({ status: 200, body: asked }),
+        decide: () => ({ status: 200, body: done }),
+        extra: () => ({ status: 200, body: asked }),
+      }),
+    );
+    const u = userEvent.setup();
+    renderWithQuery(<AiApp />);
+    const box = await screen.findByLabelText("Message Hana");
+    await waitFor(() => expect(box).toBeEnabled());
+    await u.type(box, "add x{Enter}");
+    await u.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByLabelText("Last response timing")).toHaveTextContent(
+      "0.1 s · no AI call needed",
+    );
   });
 
   it("starter suggestions send a message when clicked", async () => {
@@ -450,10 +510,16 @@ describe("AI settings", () => {
   });
 
   it("tests a connection and reports success or the reason for failure", async () => {
-    let result: { ok: boolean; message: string; latencyMs: number | null } = {
+    let result: {
+      ok: boolean;
+      message: string;
+      latencyMs: number | null;
+      toolsOk: boolean | null;
+    } = {
       ok: true,
       message: "Connected. llama answered.",
       latencyMs: 120,
+      toolsOk: true,
     };
     withAi(
       backend({
@@ -469,12 +535,13 @@ describe("AI settings", () => {
     const buttons = await screen.findAllByRole("button", { name: "Test connection" });
     expect(buttons[0]).toBeDisabled(); // Gemini isn't ready
     await u.click(buttons[2]!);
-    expect(await screen.findByText("✓ Connected. llama answered. (120 ms)")).toBeInTheDocument();
+    expect(await screen.findByText("✓ Connected. llama answered. (0.1 s)")).toBeInTheDocument();
 
     result = {
       ok: false,
       message: "Can't reach localhost:11434. Is it running and reachable?",
       latencyMs: null,
+      toolsOk: null,
     };
     await u.click(buttons[2]!);
     expect(await screen.findByText(/✗ Can't reach localhost:11434/)).toBeInTheDocument();
@@ -485,7 +552,7 @@ describe("AI settings", () => {
       backend({
         extra: (r) =>
           r.path === "/api/ai/providers/ollama/models"
-            ? { status: 200, body: { models: ["llama3:8b", "qwen3:7b"] } }
+            ? { status: 200, body: { models: ["llama3:8b", "qwen3:7b"], hidden: 0 } }
             : { status: 404, body: {} },
       }),
     );
@@ -572,5 +639,96 @@ describe("AI settings", () => {
     const list = await screen.findByRole("list", { name: "Recent AI activity" });
     expect(within(list).getByText("create task")).toBeInTheDocument();
     expect(within(list).getByText(/executed · write · ollama/)).toBeInTheDocument();
+  });
+
+  it("saves a backup model (and clears it with an empty value)", async () => {
+    const db = withAi(
+      backend({
+        overview: ready,
+        extra: (r) =>
+          r.method === "PUT"
+            ? { status: 200, body: providerStatus("OLLAMA", { ready: true, model: "llama" }) }
+            : { status: 404, body: {} },
+      }),
+    );
+    const u = userEvent.setup();
+    renderWithQuery(<AiSettingsSection />);
+    const backup = (await screen.findAllByLabelText("Backup model (optional)"))[2]!;
+    await u.type(backup, "gemini-stable");
+    await u.click(screen.getAllByRole("button", { name: "Save" })[2]!);
+    await waitFor(() =>
+      expect(db.writes[0]).toMatchObject({
+        method: "PUT",
+        path: "/api/ai/providers/ollama",
+        body: { fallbackModel: "gemini-stable" },
+      }),
+    );
+  });
+
+  it("hides models that can't chat and offers to show them all", async () => {
+    let all = false;
+    withAi(
+      backend({
+        extra: (r) => {
+          if (r.path !== "/api/ai/providers/ollama/models") return { status: 404, body: {} };
+          all = r.query.get("all") === "true";
+          return {
+            status: 200,
+            body: all
+              ? { models: ["llama3:8b", "nomic-embed-text"], hidden: 0 }
+              : { models: ["llama3:8b"], hidden: 1 },
+          };
+        },
+      }),
+    );
+    const u = userEvent.setup();
+    renderWithQuery(<AiSettingsSection />);
+    await u.click((await screen.findAllByRole("button", { name: "Load models" }))[2]!);
+    expect(await screen.findByText(/1 models available; 1 hidden/)).toBeInTheDocument();
+    await u.click(screen.getByRole("button", { name: "Show all" }));
+    await waitFor(() => expect(document.querySelectorAll("#ollama-models option")).toHaveLength(2));
+    expect(all).toBe(true);
+  });
+
+  it("warns when a model connects but can't do tool calls", async () => {
+    withAi(
+      backend({
+        extra: (r) =>
+          r.path === "/api/ai/providers/ollama/test"
+            ? {
+                status: 200,
+                body: {
+                  ok: true,
+                  toolsOk: false,
+                  message: "Connected, but the model answered without using the test tool.",
+                  latencyMs: 900,
+                },
+              }
+            : { status: 404, body: {} },
+      }),
+    );
+    const u = userEvent.setup();
+    renderWithQuery(<AiSettingsSection />);
+    await u.click((await screen.findAllByRole("button", { name: "Test connection" }))[2]!);
+    const note = await screen.findByText(
+      /⚠ Connected, but the model answered without using the test tool/,
+    );
+    expect(note).toHaveClass("text-danger");
+  });
+
+  it("saves the reply style", async () => {
+    const db = withAi(
+      backend({
+        extra: (r) =>
+          r.method === "PATCH" ? { status: 200, body: ready.settings } : { status: 404, body: {} },
+      }),
+    );
+    const u = userEvent.setup();
+    renderWithQuery(<AiSettingsSection />);
+    expect(await screen.findByRole("radio", { name: /Quick confirmation/ })).toBeChecked();
+    await u.click(screen.getByRole("radio", { name: /Hana explains in her own words/ }));
+    await waitFor(() =>
+      expect(db.writes[0]).toMatchObject({ method: "PATCH", body: { responseStyle: "CHATTY" } }),
+    );
   });
 });
